@@ -365,6 +365,7 @@ def _load_markdown(filepath: Path, source_name: str) -> list[Document]:
         "disease": meta.get("disease", title),
         "references": meta.get("sources", []),
         "review_status": meta.get("review_status", "unknown"),
+        "retrieved": str(meta["retrieved"]) if meta.get("retrieved") else None,
         "file_name": filepath.name,
         "file_type": "markdown",
     }

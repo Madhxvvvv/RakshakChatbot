@@ -66,6 +66,15 @@ EMERGENCY_RESPONSE = """🚨 **This sounds like it could be a medical emergency.
 > ⚠️ *I am an AI assistant and cannot provide emergency medical care. Please contact professional medical services immediately.*"""
 
 
+# Helplines shown alongside the chat (India first, as the project's context)
+HELPLINES = [
+    {"name": "Emergency (India)", "number": "112"},
+    {"name": "Ambulance (India)", "number": "108"},
+    {"name": "TB helpline, Ni-kshay Sampark", "number": "1800-11-6666"},
+    {"name": "Mental health, Tele-MANAS", "number": "14416"},
+]
+
+
 # =============================================================================
 # Disclaimer Text
 # =============================================================================

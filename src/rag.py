@@ -43,7 +43,9 @@ class RetrievedContext:
         content: The text content of the retrieved chunk.
         source: The source document title (e.g. "Dengue and severe dengue").
         section: The section within the document (e.g. "Symptoms").
+        disease: The disease the document covers (e.g. "Dengue").
         references: Citation metadata: list of {publisher, title, url}.
+        retrieved: Date the sources were retrieved, if recorded.
         similarity: Dense cosine similarity between query and chunk.
         score: Combined hybrid retrieval score.
     """
@@ -51,7 +53,9 @@ class RetrievedContext:
     content: str
     source: str
     section: str = ""
+    disease: str = ""
     references: list[dict] = field(default_factory=list)
+    retrieved: Optional[str] = None
     similarity: float = 0.0
     score: float = 0.0
 
@@ -199,7 +203,9 @@ class RAGPipeline:
                 content=self._chunks[i].page_content,
                 source=self._chunks[i].metadata.get("source", "Unknown source"),
                 section=self._chunks[i].metadata.get("section", ""),
+                disease=self._chunks[i].metadata.get("disease", ""),
                 references=self._chunks[i].metadata.get("references", []),
+                retrieved=self._chunks[i].metadata.get("retrieved"),
                 similarity=float(dense[i]),
                 score=float(hybrid[i]),
             )

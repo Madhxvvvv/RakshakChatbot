@@ -128,7 +128,6 @@ def main() -> None:
         try:
             st.session_state.chatbot = HealthcareChatbot(
                 config=config,
-                history=history,
                 rag_pipeline=rag_pipeline,
                 provider_override=selected_provider,
                 model_override=selected_model,
@@ -204,7 +203,10 @@ def _handle_user_input(
         sources = None
 
         try:
-            for result in chatbot.process_query_stream(user_query=user_input):
+            for result in chatbot.process_query_stream(
+                user_query=user_input,
+                conversation_history=history.get_context_history(),
+            ):
                 chunk = result.get("chunk", "")
                 if chunk:
                     full_response += chunk

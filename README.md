@@ -51,7 +51,9 @@ Answer + numbered sources + disclaimer
 
 ```
 healthcare-chatbot/
-├── app.py                      # Streamlit entry point
+├── server.py                   # FastAPI server: web/index.html + /api/meta, /api/chat
+├── web/index.html              # Web chat interface (single page, no build step)
+├── app.py                      # Alternative Streamlit interface
 ├── data/
 │   ├── knowledge/              # Curated knowledge base: one Markdown file per disease
 │   │   ├── dengue.md           #   YAML frontmatter: disease, title, sources (publisher/title/url),
@@ -75,7 +77,8 @@ healthcare-chatbot/
 └── tests/
     ├── test_prompts.py         # System prompt and prompt builder
     ├── test_rag.py             # Knowledge base, retrieval, scope check (in-scope vs hard negatives)
-    └── test_safety.py          # Emergency, diagnosis, prescription rules; output validation
+    ├── test_safety.py          # Emergency, diagnosis, prescription rules; output validation
+    └── test_server.py          # Web API routes that need no model call
 ```
 
 ---
@@ -99,11 +102,15 @@ GROQ_API_KEY=your_key_here      # https://console.groq.com/keys
 GEMINI_API_KEY=your_key_here    # https://aistudio.google.com/apikey
 ```
 
-If `LLM_PROVIDER` is not set, the provider whose key is present is used. Then run:
+If `LLM_PROVIDER` is not set, the provider whose key is present is used. Then start the web interface:
 
 ```bash
-streamlit run app.py
+uvicorn server:app --reload
 ```
+
+and open http://127.0.0.1:8000. Each answer shows its route (answered, diagnosis or medicine request declined, out of scope, emergency), the numbered sources behind its `[n]` citations, and a trace showing whether the model was called, the latency, the best retrieval match and any safety rule that fired. Without an API key the server still starts in *safety layer only* mode.
+
+The older Streamlit interface is still available with `streamlit run app.py`.
 
 The first start downloads the embedding model (~90 MB). The knowledge base is re-indexed on every start, so edits to `data/knowledge/*.md` take effect after a restart.
 
@@ -125,7 +132,7 @@ The first start downloads the embedding model (~90 MB). The knowledge base is re
 | `RAG_SCOPE_THRESHOLD` | `0.52` | Similarity floor for questions not naming an in-scope disease |
 | `RAG_SCOPE_THRESHOLD_NAMED` | `0.20` | Similarity floor for questions naming one of the five diseases |
 
-The sidebar's **Show retrieval diagnostics** toggle displays each source's similarity score.
+In the Streamlit interface, the sidebar's **Show retrieval diagnostics** toggle displays each source's similarity score.
 
 ---
 
