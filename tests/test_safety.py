@@ -1,7 +1,7 @@
 """Tests for the safety guardrails module.
 
 Covers emergency detection, diagnosis prevention, prescription prevention,
-off-topic filtering, and edge cases.
+and edge cases. Scope (five diseases only) is tested in test_rag.py.
 """
 
 import pytest
@@ -40,6 +40,14 @@ class TestEmergencyDetection:
             "He's not breathing",
             "She fainted and is unresponsive",
             "I'm thinking about self-harm",
+            # Warning signs of the five in-scope diseases, described as happening now
+            "I have dengue and my gums are bleeding from the gums since morning",
+            "My son has dengue and keeps vomiting",
+            "she has severe abdominal pain after the fever went down",
+            "my father has malaria and is very confused",
+            "I am coughing up blood for two days",
+            "my daughter has blood in her stool after typhoid",
+            "he has malaria and is having convulsions",
         ],
     )
     def test_detects_emergency(self, guardrails: SafetyGuardrails, query: str) -> None:
@@ -57,6 +65,12 @@ class TestEmergencyDetection:
             "What causes seizures in general?",
             "How should I breathe during exercise?",
             "What is the difference between fainting and dizziness?",
+            # Asking about warning signs is information, not an emergency
+            "What are the warning signs of severe dengue?",
+            "Can dengue cause bleeding gums?",
+            "Tell me about vomiting blood in dengue",
+            "Is coughing up blood a symptom of TB?",
+            "What does severe malaria look like?",
         ],
     )
     def test_does_not_flag_safe_queries(
@@ -87,6 +101,14 @@ class TestDiagnosisPrevention:
             "Tell me my diagnosis",
             "What condition do I have based on these symptoms?",
             "Diagnose my symptoms",
+            # The five in-scope diseases
+            "Do I have dengue?",
+            "I have fever and joint pain, could it be chikungunya?",
+            "Does my son have malaria?",
+            "Is this typhoid?",
+            "am I infected with TB",
+            "My platelet count is 90000, is that normal?",
+            "my widal test is positive, what does it mean",
         ],
     )
     def test_detects_diagnosis_request(
@@ -105,6 +127,11 @@ class TestDiagnosisPrevention:
             "How is cancer diagnosed by doctors?",
             "What tests can detect heart disease?",
             "Tell me about common cold symptoms",
+            "What are the symptoms of dengue?",
+            "How is malaria diagnosed?",
+            "Is TB curable?",
+            "What is the difference between chikungunya and dengue?",
+            "What does a positive NS1 test mean?",
         ],
     )
     def test_allows_informational_queries(
@@ -135,6 +162,12 @@ class TestPrescriptionPrevention:
             "What pills should I take for pain?",
             "Give me a prescription",
             "What dosage should I take?",
+            # The five in-scope diseases
+            "Which medicine is best for dengue?",
+            "What antibiotic works for typhoid?",
+            "Can I take paracetamol for dengue fever?",
+            "Should I give my child crocin for chikungunya?",
+            "What is the dose of chloroquine for malaria?",
         ],
     )
     def test_detects_prescription_request(
@@ -153,6 +186,9 @@ class TestPrescriptionPrevention:
             "What are the side effects of ibuprofen?",
             "Tell me about antibiotics",
             "How does aspirin reduce fever?",
+            "Is TB treatment free in India?",
+            "Can I stop TB medicines once I feel better?",
+            "How is malaria treated?",
         ],
     )
     def test_allows_educational_medication_queries(
@@ -253,3 +289,16 @@ class TestOutputValidation:
         validated = guardrails.validate_output(response)
         # Should not have added a second disclaimer
         assert validated.count("not a substitute") == 1
+
+    def test_recognises_paraphrased_disclaimer(
+        self, guardrails: SafetyGuardrails
+    ) -> None:
+        """A model-written disclaimer in other words should not get a second one."""
+        response = "Dengue spreads through mosquito bites [1].\n\n*This does not replace professional medical advice.*"
+        assert guardrails.validate_output(response) == response
+
+    def test_normalises_fullwidth_citations(self, guardrails: SafetyGuardrails) -> None:
+        """Citations like 【2】 should become [2]."""
+        validated = guardrails.validate_output("Aedes bite by day【2】 and at dusk 【 3 】.")
+        assert "[2]" in validated and "[3]" in validated
+        assert "【" not in validated

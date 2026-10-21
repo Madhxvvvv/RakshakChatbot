@@ -1,30 +1,55 @@
 """Core chatbot orchestrator for the Healthcare AI Chatbot.
 
-Wires together all components — safety guardrails, RAG retriever,
-prompt builder, LangChain LLM, and output validation — into a single
-cohesive pipeline that processes user queries end-to-end.
+Wires together all components — safety guardrails, hybrid retriever with
+scope check, prompt builder, LangChain LLM, and output validation — into a
+single pipeline that processes user queries end-to-end.
 """
 
 import logging
+import re
+from dataclasses import dataclass
 from typing import Generator, Optional
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 
 from src.config import AppConfig, LLMProvider
 from src.history import ConversationHistory
 from src.llm import LLMError, generate_response, generate_response_stream, get_llm
 from src.prompts import (
     DIAGNOSIS_REDIRECT,
-    DISCLAIMER_TEXT,
     EMERGENCY_RESPONSE,
-    OFF_TOPIC_REDIRECT,
+    OUT_OF_SCOPE_RESPONSE,
     PRESCRIPTION_REDIRECT,
     build_prompt,
 )
+from src.rag import RAGPipeline, mentions_scoped_disease
 from src.safety import SafetyAction, SafetyGuardrails
-from src.utils import format_sources, sanitize_input
+from src.utils import sanitize_input
 
 logger = logging.getLogger(__name__)
+
+EMPTY_QUERY_RESPONSE = "Please enter a question and I'll be happy to help! 😊"
+
+# Words that refer back to a disease named earlier in the conversation
+_FOLLOW_UP_RE = re.compile(
+    r"\b(?:it|its|it's|this|that|these|those|they|them|their|the\s+disease|same|yeh|ye|isme|iska|iske|isse)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class _Prepared:
+    """Result of the pre-generation stages for one query.
+
+    Exactly one of `early_response` (a canned reply that bypasses the LLM)
+    or `messages` (the prompt to send to the LLM) is set.
+    """
+
+    route: str
+    early_response: Optional[str] = None
+    messages: Optional[list[BaseMessage]] = None
+    sources: Optional[list[dict]] = None
 
 
 class HealthcareChatbot:
@@ -32,17 +57,16 @@ class HealthcareChatbot:
 
     Processes user queries through a layered pipeline:
     1. Input sanitization
-    2. Safety guardrails (emergency, diagnosis, prescription, off-topic)
-    3. RAG retrieval (if enabled)
-    4. Prompt building (system + profile + context + history + query)
-    5. LLM generation via LangChain (streaming)
-    6. Output validation
-    7. Response formatting with sources
+    2. Safety pre-check (emergency, diagnosis, prescription) — no model call
+    3. Hybrid retrieval (dense + BM25)
+    4. Scope check (similarity floor) — refuse if out of scope
+    5. Grounded generation with numbered sources (streaming)
+    6. Output validation (dosage warning, disclaimer)
 
     Args:
         config: Application configuration.
         history: Conversation history manager.
-        rag_pipeline: Optional RAG pipeline for retrieval-augmented generation.
+        rag_pipeline: Initialized RAG pipeline over the disease knowledge base.
         provider_override: Optional runtime LLM provider override.
         model_override: Optional runtime model name override.
     """
@@ -51,7 +75,7 @@ class HealthcareChatbot:
         self,
         config: AppConfig,
         history: ConversationHistory,
-        rag_pipeline: Optional[object] = None,
+        rag_pipeline: RAGPipeline,
         provider_override: LLMProvider | None = None,
         model_override: str | None = None,
     ) -> None:
@@ -91,176 +115,83 @@ class HealthcareChatbot:
         self._model = model_name
         logger.info("LLM switched to provider=%s, model=%s", provider.value, model_name)
 
-    def process_query(
-        self,
-        user_query: str,
-        user_health_profile: Optional[dict[str, str]] = None,
-    ) -> dict:
+    def process_query(self, user_query: str) -> dict:
         """Process a user query through the full pipeline (non-streaming).
+
+        The conversation history must not yet contain `user_query`.
 
         Args:
             user_query: The raw user input.
-            user_health_profile: Optional user health details for personalization.
 
         Returns:
             Dict with keys:
                 - 'response': The final response text.
-                - 'sources': Optional list of RAG source citations.
-                - 'safety_action': The safety action that was taken.
+                - 'sources': Optional list of retrieved source dicts.
+                - 'route': 'answer', 'out_of_scope', 'error', or a SafetyAction value.
                 - 'is_safety_redirect': Whether the response bypassed the LLM.
         """
-        # Step 1: Sanitize input
-        query = sanitize_input(user_query)
-        if not query:
+        prepared = self._prepare(user_query)
+        if prepared.early_response is not None:
             return {
-                "response": "Please enter a question and I'll be happy to help! 😊",
+                "response": prepared.early_response,
                 "sources": None,
-                "safety_action": "proceed",
-                "is_safety_redirect": False,
-            }
-
-        # Step 2: Safety checks
-        safety_result = self._safety.check_input(query)
-        logger.info(
-            "Safety check: action=%s, reason=%s",
-            safety_result.action.value,
-            safety_result.reason,
-        )
-
-        # Step 3: Handle safety redirects (bypass LLM)
-        if safety_result.action != SafetyAction.PROCEED:
-            response = self._get_safety_response(safety_result.action)
-            return {
-                "response": response,
-                "sources": None,
-                "safety_action": safety_result.action.value,
+                "route": prepared.route,
                 "is_safety_redirect": True,
             }
 
-        # Step 4: RAG retrieval
-        retrieved_context = None
-        sources = None
-        if self._rag:
-            try:
-                retrieved = self._rag.retrieve(query, top_k=self._config.rag.top_k)
-                if retrieved:
-                    retrieved_context = [
-                        {"content": r.content, "source": r.source} for r in retrieved
-                    ]
-                    sources = [{"source": r.source} for r in retrieved]
-                    logger.info("RAG retrieved %d chunks.", len(retrieved))
-            except Exception as e:
-                logger.warning("RAG retrieval failed, proceeding without context: %s", e)
-
-        # Step 5: Build prompt (returns LangChain messages)
-        conversation_history = self._history.get_context_history()
-        messages = build_prompt(
-            user_query=query,
-            conversation_history=conversation_history,
-            retrieved_context=retrieved_context,
-            user_health_profile=user_health_profile,
-        )
-
-        # Step 6: Generate LLM response via LangChain
         try:
-            response = generate_response(self._llm, messages)
+            response = generate_response(self._llm, prepared.messages)
         except LLMError as e:
             logger.error("LLM error: %s", e)
             return {
                 "response": self._error_message(),
                 "sources": None,
-                "safety_action": "error",
+                "route": "error",
                 "is_safety_redirect": False,
             }
 
-        # Step 7: Validate output
-        response = self._safety.validate_output(response)
-
-        # Step 8: Append source citations
-        if sources:
-            response += format_sources(sources)
-
         return {
-            "response": response,
-            "sources": sources,
-            "safety_action": "proceed",
+            "response": self._safety.validate_output(response),
+            "sources": prepared.sources,
+            "route": prepared.route,
             "is_safety_redirect": False,
         }
 
-    def process_query_stream(
-        self,
-        user_query: str,
-        user_health_profile: Optional[dict[str, str]] = None,
-    ) -> Generator[dict, None, None]:
+    def process_query_stream(self, user_query: str) -> Generator[dict, None, None]:
         """Process a user query with streaming LLM output.
 
-        Yields partial results as the LLM generates tokens. Safety checks
-        and RAG retrieval happen before streaming begins.
+        Safety checks, retrieval and the scope check happen before streaming
+        begins. The conversation history must not yet contain `user_query`.
 
         Args:
             user_query: The raw user input.
-            user_health_profile: Optional user health details.
 
         Yields:
-            Dicts with 'chunk' (text), 'sources', 'done' (bool), and 'is_safety_redirect'.
+            Dicts with 'chunk' (text), 'sources', 'done' (bool), 'route' and
+            'is_safety_redirect'. After a streamed LLM answer, the final event
+            also has 'full_response': the validated text that replaces the
+            streamed chunks.
         """
-        # Step 1: Sanitize
-        query = sanitize_input(user_query)
-        if not query:
+        prepared = self._prepare(user_query)
+        if prepared.early_response is not None:
             yield {
-                "chunk": "Please enter a question and I'll be happy to help! 😊",
+                "chunk": prepared.early_response,
                 "sources": None,
                 "done": True,
-                "is_safety_redirect": False,
-            }
-            return
-
-        # Step 2: Safety checks
-        safety_result = self._safety.check_input(query)
-        logger.info("Safety check: %s", safety_result.action.value)
-
-        # Step 3: Safety redirect (no streaming needed)
-        if safety_result.action != SafetyAction.PROCEED:
-            yield {
-                "chunk": self._get_safety_response(safety_result.action),
-                "sources": None,
-                "done": True,
+                "route": prepared.route,
                 "is_safety_redirect": True,
             }
             return
 
-        # Step 4: RAG retrieval
-        retrieved_context = None
-        sources = None
-        if self._rag:
-            try:
-                retrieved = self._rag.retrieve(query, top_k=self._config.rag.top_k)
-                if retrieved:
-                    retrieved_context = [
-                        {"content": r.content, "source": r.source} for r in retrieved
-                    ]
-                    sources = [{"source": r.source} for r in retrieved]
-            except Exception as e:
-                logger.warning("RAG retrieval failed: %s", e)
-
-        # Step 5: Build prompt (LangChain messages)
-        conversation_history = self._history.get_context_history()
-        messages = build_prompt(
-            user_query=query,
-            conversation_history=conversation_history,
-            retrieved_context=retrieved_context,
-            user_health_profile=user_health_profile,
-        )
-
-        # Step 6: Stream LLM response via LangChain
         full_response = ""
         try:
-            for text_chunk in generate_response_stream(self._llm, messages):
+            for text_chunk in generate_response_stream(self._llm, prepared.messages):
                 full_response += text_chunk
                 yield {
                     "chunk": text_chunk,
                     "sources": None,
                     "done": False,
+                    "route": prepared.route,
                     "is_safety_redirect": False,
                 }
         except LLMError as e:
@@ -269,36 +200,96 @@ class HealthcareChatbot:
                 "chunk": self._error_message(),
                 "sources": None,
                 "done": True,
+                "route": "error",
                 "is_safety_redirect": False,
             }
             return
 
-        # Step 7: Post-generation validation
-        validated = self._safety.validate_output(full_response)
-        extra_text = validated[len(full_response):]  # Only the appended parts
-
-        # Step 8: Append any validation additions + sources
-        if sources:
-            extra_text += format_sources(sources)
-
-        if extra_text:
-            yield {
-                "chunk": extra_text,
-                "sources": sources,
-                "done": True,
-                "is_safety_redirect": False,
-            }
-        else:
-            yield {
-                "chunk": "",
-                "sources": sources,
-                "done": True,
-                "is_safety_redirect": False,
-            }
+        # Post-generation validation may rewrite citations and append warnings /
+        # a disclaimer, so the final event carries the complete validated text.
+        yield {
+            "chunk": "",
+            "full_response": self._safety.validate_output(full_response),
+            "sources": prepared.sources,
+            "done": True,
+            "route": prepared.route,
+            "is_safety_redirect": False,
+        }
 
     # -------------------------------------------------------------------------
     # Private helpers
     # -------------------------------------------------------------------------
+
+    def _prepare(self, user_query: str) -> _Prepared:
+        """Run every stage before generation: sanitize, safety, retrieval, scope."""
+        query = sanitize_input(user_query)
+        if not query:
+            return _Prepared(route="empty", early_response=EMPTY_QUERY_RESPONSE)
+
+        # Safety pre-check (deterministic, no model call)
+        safety_result = self._safety.check_input(query)
+        logger.info(
+            "Safety check: action=%s, reason=%s",
+            safety_result.action.value,
+            safety_result.reason,
+        )
+        if safety_result.action != SafetyAction.PROCEED:
+            return _Prepared(
+                route=safety_result.action.value,
+                early_response=self._get_safety_response(safety_result.action),
+            )
+
+        # Hybrid retrieval + scope check
+        conversation_history = self._history.get_context_history()
+        retrieval = self._rag.retrieve(
+            self._retrieval_query(query, conversation_history),
+            top_k=self._config.rag.top_k,
+        )
+        if not retrieval.in_scope:
+            logger.info("Out of scope (top similarity %.3f).", retrieval.top_similarity)
+            return _Prepared(route="out_of_scope", early_response=OUT_OF_SCOPE_RESPONSE)
+
+        retrieved_context = [
+            {
+                "content": c.content,
+                "source": c.source,
+                "section": c.section,
+                "references": c.references,
+            }
+            for c in retrieval.contexts
+        ]
+        sources = [
+            {
+                "source": c.source,
+                "section": c.section,
+                "references": c.references,
+                "similarity": round(c.similarity, 3),
+            }
+            for c in retrieval.contexts
+        ]
+
+        messages = build_prompt(
+            user_query=query,
+            conversation_history=conversation_history,
+            retrieved_context=retrieved_context,
+        )
+        return _Prepared(route="answer", messages=messages, sources=sources)
+
+    @staticmethod
+    def _retrieval_query(query: str, conversation_history: list[dict[str, str]]) -> str:
+        """Add the disease from the previous turn to follow-up questions.
+
+        "How does it spread?" after a question about dengue has no disease
+        name of its own, so it would retrieve poorly and fail the scope check.
+        Only questions that refer back with a pronoun are treated as follow-ups,
+        so a new topic ("What are the symptoms of COVID-19?") is still refused.
+        """
+        if mentions_scoped_disease(query) or not _FOLLOW_UP_RE.search(query):
+            return query
+        for msg in reversed(conversation_history):
+            if msg["role"] == "user" and mentions_scoped_disease(msg["content"]):
+                return f"{msg['content']} {query}"
+        return query
 
     @staticmethod
     def _get_safety_response(action: SafetyAction) -> str:
@@ -307,9 +298,8 @@ class HealthcareChatbot:
             SafetyAction.EMERGENCY: EMERGENCY_RESPONSE,
             SafetyAction.BLOCK_DIAGNOSIS: DIAGNOSIS_REDIRECT,
             SafetyAction.BLOCK_PRESCRIPTION: PRESCRIPTION_REDIRECT,
-            SafetyAction.REDIRECT_OFF_TOPIC: OFF_TOPIC_REDIRECT,
         }
-        return responses.get(action, "I'm sorry, I can only help with healthcare-related questions.")
+        return responses.get(action, OUT_OF_SCOPE_RESPONSE)
 
     @staticmethod
     def _error_message() -> str:
@@ -321,5 +311,6 @@ class HealthcareChatbot:
             "- API rate limiting\n"
             "- Temporary service disruption\n"
             "- Content safety filters\n\n"
-            "Try rephrasing your question or asking about a different health topic."
+            "If you have warning signs such as severe abdominal pain, bleeding, confusion "
+            "or difficulty breathing, please seek medical care immediately."
         )

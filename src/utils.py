@@ -60,21 +60,39 @@ def truncate_text(text: str, max_length: int = 500, suffix: str = "...") -> str:
     return text[: max_length - len(suffix)] + suffix
 
 
-def format_sources(sources: Optional[list[dict[str, str]]]) -> str:
-    """Format RAG source citations as a markdown string.
+def format_sources(sources: Optional[list[dict]], show_similarity: bool = False) -> str:
+    """Format retrieved sources as a numbered markdown list.
+
+    The numbers match the [n] citations in the answer. Each entry names the
+    knowledge-base document and section, followed by links to the WHO/CDC
+    pages it was written from.
 
     Args:
-        sources: List of source dicts with 'source' and optionally 'content' keys.
+        sources: Source dicts with 'source', 'section', 'references'
+            ([{publisher, title, url}]) and optionally 'similarity'.
+        show_similarity: Append the retrieval similarity (diagnostics).
 
     Returns:
-        Formatted markdown string with source references.
+        Markdown string, or "" if there are no sources.
     """
     if not sources:
         return ""
 
-    lines = ["\n\n---\n📚 **Sources:**"]
+    lines = []
     for i, src in enumerate(sources, 1):
-        source_name = src.get("source", "Unknown source")
-        lines.append(f"  {i}. {source_name}")
+        label = src.get("source", "Unknown source")
+        if src.get("section"):
+            label += f" — {src['section']}"
+        links = [
+            f"[{ref.get('publisher', 'Source')}]({ref['url']})"
+            for ref in src.get("references") or []
+            if ref.get("url")
+        ]
+        line = f"**[{i}]** {label}"
+        if links:
+            line += " · " + " · ".join(links)
+        if show_similarity and "similarity" in src:
+            line += f" · similarity {src['similarity']:.2f}"
+        lines.append(line)
 
-    return "\n".join(lines)
+    return "\n\n".join(lines)

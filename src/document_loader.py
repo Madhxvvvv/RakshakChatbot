@@ -2,15 +2,17 @@
 
 Handles different document types with intelligent content extraction:
 - PDF: Layout-aware extraction with table detection and multi-column support (PyMuPDF)
-- Markdown: Structure-preserving loading
+- Markdown: YAML frontmatter (citation metadata) + one document per section
 - Text: Plain text loading
 
 Designed to produce high-quality, well-structured text for the RAG pipeline.
 """
 
 import logging
+import re
 from pathlib import Path
 
+import yaml
 from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
@@ -71,34 +73,6 @@ def load_documents(directory: Path) -> list[Document]:
 # =============================================================================
 # File type handlers
 # =============================================================================
-
-def load_single_document(filepath: Path) -> list[Document]:
-    """Load a single document based on its extension.
-    
-    Args:
-        filepath: Path to the file.
-        
-    Returns:
-        List of LangChain Document objects.
-    """
-    if not filepath.exists() or not filepath.is_file():
-        logger.error("File does not exist: %s", filepath)
-        return []
-    
-    if filepath.suffix.lower() not in SUPPORTED_EXTENSIONS:
-        logger.error("Unsupported file extension: %s", filepath.suffix)
-        return []
-        
-    try:
-        docs = _load_file(filepath)
-        logger.info("Loaded %s → %d document(s)", filepath.name, len(docs))
-        return docs
-    except Exception as e:
-        logger.error("Failed to load %s: %s", filepath.name, e)
-        return []
-
-
-
 
 def _load_file(filepath: Path) -> list[Document]:
     """Load a single file based on its extension.
@@ -361,29 +335,80 @@ def _extract_text_with_layout(page) -> str:
 
 
 def _load_markdown(filepath: Path, source_name: str) -> list[Document]:
-    """Load a markdown file as a single document.
+    """Load a knowledge-base markdown file, one Document per `## ` section.
+
+    The file may start with YAML frontmatter carrying citation metadata
+    (disease, title, sources[publisher/title/url], review_status). Each
+    section's text is prefixed with "<Title> — <Section>" so that every
+    chunk names the disease it belongs to, which matters for retrieval.
 
     Args:
         filepath: Path to the markdown file.
-        source_name: Human-readable source name.
+        source_name: Fallback source name when no frontmatter title exists.
 
     Returns:
-        List containing a single Document.
+        List of Documents, one per section.
     """
-    content = filepath.read_text(encoding="utf-8").strip()
-    if not content:
+    text = filepath.read_text(encoding="utf-8").strip()
+    if not text:
         return []
 
-    return [
-        Document(
-            page_content=content,
-            metadata={
-                "source": source_name,
-                "file_name": filepath.name,
-                "file_type": "markdown",
-            },
+    meta: dict = {}
+    match = _FRONTMATTER_RE.match(text)
+    if match:
+        meta = yaml.safe_load(match.group(1)) or {}
+        text = text[match.end():].strip()
+
+    title = meta.get("title", source_name)
+    base_metadata = {
+        "source": title,
+        "disease": meta.get("disease", title),
+        "references": meta.get("sources", []),
+        "review_status": meta.get("review_status", "unknown"),
+        "file_name": filepath.name,
+        "file_type": "markdown",
+    }
+
+    documents: list[Document] = []
+    for section, body in _split_sections(text):
+        body = body.strip()
+        if not body:
+            continue
+        heading = f"{title} — {section}" if section else title
+        documents.append(
+            Document(
+                page_content=f"{heading}\n\n{body}",
+                metadata={**base_metadata, "section": section, "heading": heading},
+            )
         )
-    ]
+    return documents
+
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _split_sections(text: str) -> list[tuple[str, str]]:
+    """Split markdown into (section_title, body) pairs on `## ` headings.
+
+    Text before the first `## ` heading (excluding a leading `# ` title line)
+    is returned with an empty section title.
+    """
+    sections: list[tuple[str, str]] = []
+    current_title = ""
+    current_lines: list[str] = []
+
+    for line in text.splitlines():
+        if line.startswith("## "):
+            sections.append((current_title, "\n".join(current_lines)))
+            current_title = line[3:].strip()
+            current_lines = []
+        elif line.startswith("# ") and not current_title:
+            continue
+        else:
+            current_lines.append(line)
+
+    sections.append((current_title, "\n".join(current_lines)))
+    return sections
 
 
 # =============================================================================

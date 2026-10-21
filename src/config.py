@@ -23,6 +23,20 @@ class LLMProvider(str, Enum):
     GROQ = "groq"
 
 
+def _default_provider() -> LLMProvider:
+    """Resolve the active provider.
+
+    Uses LLM_PROVIDER if set; otherwise picks whichever provider has an API key,
+    preferring Gemini when both (or neither) are configured.
+    """
+    explicit = os.getenv("LLM_PROVIDER", "").strip().lower()
+    if explicit:
+        return LLMProvider(explicit)
+    if not os.getenv("GEMINI_API_KEY") and os.getenv("GROQ_API_KEY"):
+        return LLMProvider.GROQ
+    return LLMProvider.GEMINI
+
+
 @dataclass(frozen=True)
 class GeminiConfig:
     """Configuration for Google Gemini."""
@@ -39,7 +53,7 @@ class GroqConfig:
 
     api_key: str = field(repr=False, default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
     model_name: str = field(
-        default_factory=lambda: os.getenv("GROQ_MODEL_NAME", "llama-3.3-70b-versatile")
+        default_factory=lambda: os.getenv("GROQ_MODEL_NAME", "openai/gpt-oss-120b")
     )
 
 
@@ -47,9 +61,7 @@ class GroqConfig:
 class LLMConfig:
     """Shared LLM generation settings."""
 
-    provider: LLMProvider = field(
-        default_factory=lambda: LLMProvider(os.getenv("LLM_PROVIDER", "gemini").lower())
-    )
+    provider: LLMProvider = field(default_factory=_default_provider)
     temperature: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.3")))
     max_tokens: int = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "2048")))
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
@@ -64,11 +76,21 @@ class RAGConfig:
         default_factory=lambda: os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     )
     hf_token: str = field(repr=False, default_factory=lambda: os.getenv("HF_TOKEN", ""))
-    top_k: int = field(default_factory=lambda: int(os.getenv("RAG_TOP_K", "3")))
-    chunk_size: int = field(default_factory=lambda: int(os.getenv("RAG_CHUNK_SIZE", "500")))
-    chunk_overlap: int = field(default_factory=lambda: int(os.getenv("RAG_CHUNK_OVERLAP", "100")))
+    top_k: int = field(default_factory=lambda: int(os.getenv("RAG_TOP_K", "4")))
+    chunk_size: int = field(default_factory=lambda: int(os.getenv("RAG_CHUNK_SIZE", "1000")))
+    chunk_overlap: int = field(default_factory=lambda: int(os.getenv("RAG_CHUNK_OVERLAP", "150")))
+    # Hybrid retrieval weights: dense (embedding cosine) vs. lexical (BM25)
+    dense_weight: float = field(default_factory=lambda: float(os.getenv("RAG_DENSE_WEIGHT", "0.7")))
+    bm25_weight: float = field(default_factory=lambda: float(os.getenv("RAG_BM25_WEIGHT", "0.3")))
+    # Scope check: refuse when the best dense cosine similarity is below the floor.
+    # Queries that name one of the five diseases use the lower floor.
+    scope_threshold: float = field(
+        default_factory=lambda: float(os.getenv("RAG_SCOPE_THRESHOLD", "0.52"))
+    )
+    scope_threshold_named: float = field(
+        default_factory=lambda: float(os.getenv("RAG_SCOPE_THRESHOLD_NAMED", "0.20"))
+    )
     knowledge_dir: Path = field(default_factory=lambda: _PROJECT_ROOT / "data" / "knowledge")
-    vectorstore_dir: Path = field(default_factory=lambda: _PROJECT_ROOT / "vectorstore")
 
 
 @dataclass(frozen=True)
@@ -87,10 +109,9 @@ class AppConfig:
 
 # Available Groq models for the UI selector
 GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
-    "gemma2-9b-it",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
 ]
 
 # Available Gemini models for the UI selector

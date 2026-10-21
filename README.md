@@ -1,262 +1,158 @@
-# 🏥 Healthcare AI Assistant
+# 🦟 AI-Driven Public Health Chatbot for Disease Awareness
 
-An AI-powered healthcare information chatbot that provides accurate, evidence-based health information using Large Language Models. Built with **Streamlit**, **LangChain**, and powered by **Gemini 2.5 Flash** / **Groq** with a **RAG** (Retrieval-Augmented Generation) pipeline.
+*A Retrieval-Augmented Generation system with source citation and safety-aware refusal.*
 
-> ⚠️ **Disclaimer:** This chatbot is for educational and informational purposes only. It is not a substitute for professional medical advice, diagnosis, or treatment. Always consult a qualified healthcare provider.
+Minor Project (ES-451), Maharaja Agrasen Institute of Technology — Madhav Kaushik, Krish Arora, Pransh Keshri. Faculty: Dr Sachin Gupta.
 
----
+The chatbot answers natural-language questions about **five diseases only** — **dengue, malaria, typhoid, tuberculosis and chikungunya** — using a curated, source-attributed knowledge base built from WHO and CDC guidance. It cites the source of every factual claim, refuses requests for diagnosis or medication, refuses questions outside its knowledge base, and escalates emergencies to human medical care.
 
-## ✨ Features
-
-### Core Features
-- 💬 **Interactive Chat Interface** — Clean, responsive Streamlit UI with streaming responses
-- 🤖 **Multi-LLM Support** — Switch between Google Gemini and Groq models in real-time
-- 📚 **RAG Pipeline** — Retrieval-Augmented Generation using curated health knowledge base
-- 🛡️ **Safety Guardrails** — Emergency detection, diagnosis prevention, prescription blocking
-- 👤 **Health Profile** — Personalized responses based on user-provided health details
-- 💾 **Conversation Memory** — Maintains context across the conversation session
-- 📋 **Medical Disclaimers** — Automatic, context-appropriate health disclaimers
-
-### Enhanced Features
-- 🔄 **Streaming Responses** — Real-time token-by-token response display
-- 📈 **Dynamic PDF Uploads** — Users can upload their own medical reports. The system securely parses and indexes them into an ephemeral, in-memory FAISS database for that session only.
-- 📊 **Advanced PDF Parsing** — Table extraction, multi-column layout handling via PyMuPDF
-- 🔍 **Source Citations** — References to knowledge base documents in responses
-- 📥 **Export Chat** — Download conversation history as text file
-- 🗑️ **Clear History** — One-click conversation reset
-- 🎨 **Custom Styling** — Premium UI with gradients, badges, and polished layout
-
-### Safety Features
-- 🚨 **Emergency Detection** — Instantly recognizes medical emergencies and provides emergency contacts
-- 🚫 **Diagnosis Prevention** — Blocks attempts to get medical diagnoses
-- 💊 **Prescription Prevention** — Refuses to recommend specific medications
-- 🔒 **Off-Topic Filtering** — Redirects non-health queries back to health topics
-- ✅ **Output Validation** — Post-generation checks for unsafe content
+> ⚠️ **Disclaimer:** This is an awareness tool only. It does not diagnose, prescribe, or replace a qualified healthcare provider. In an emergency in India, call **112** or **108**.
 
 ---
 
-## 🏗️ Architecture
+## ✨ What it does
+
+| In scope | Explicit non-goals |
+|---|---|
+| Symptoms, transmission, prevention, warning signs and care-seeking for the five diseases | Diagnosing any individual |
+| Inline `[n]` citation of every factual claim, with links to WHO/CDC pages | Medicine, dose or prescription advice |
+| Correcting common misconceptions (e.g. "dengue mosquitoes bite only at night") | Triage or severity scoring |
+| Emergency escalation with helpline numbers | Collecting personal or health data |
+| Refusing out-of-scope questions instead of answering from model memory | Any disease outside the five in scope |
+
+---
+
+## 🏗️ Query pipeline
 
 ```
-User Query
-    ↓
-┌─────────────────────────────────┐
-│       Streamlit UI (app.py)     │
-│    Chat Interface + Sidebar     │
-│  Health Profile + LLM Selector  │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│    Safety Guardrails (safety.py)│
-│  Emergency | Diagnosis | Rx     │
-│      Off-topic | Validation     │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│    RAG Pipeline (rag.py)        │
-│  Document Loader → Chunking     │
-│  Embeddings → FAISS Search      │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│   Prompt Builder (prompts.py)   │
-│  System + Profile + RAG +       │
-│  History + Query                │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│     LangChain LLM (llm.py)      │
-│  Gemini 2.5 Flash | Groq        │
-└────────────┬────────────────────┘
-             ↓
-┌─────────────────────────────────┐
-│   Output Validation (safety.py) │
-│  Disclaimer + Safety Check      │
-└────────────┬────────────────────┘
-             ↓
-        Response + Sources → UI
+User query
+ |-> [1] SAFETY PRE-CHECK      deterministic regex rules, no model call   (src/safety.py)
+ |        emergency red flag?      --> escalate + helplines, STOP
+ |        diagnosis / dose request? --> refuse + referral, STOP
+ |-> [2] HYBRID RETRIEVAL       0.7 × dense cosine + 0.3 × BM25           (src/rag.py)
+ |-> [3] SCOPE CHECK            best similarity below floor? --> refuse, STOP
+ |-> [4] GROUNDED GENERATION    top-k chunks as numbered sources;         (src/prompts.py, src/llm.py)
+ |                              model bound to them, cites [n]
+ |-> [5] OUTPUT VALIDATION      citation format, dosage warning, disclaimer (src/safety.py)
+ v
+Answer + numbered sources + disclaimer
 ```
 
----
+**Why each decision** (see the synopsis for full justification):
 
-## 🛠️ Technology Stack
-
-| Component | Technology |
-|-----------|-----------|
-| **Frontend** | Streamlit |
-| **LLM Framework** | LangChain |
-| **LLM Providers** | Google Gemini 2.5 Flash, Groq (Llama 3.3, Mixtral) |
-| **Embeddings** | HuggingFace sentence-transformers (all-MiniLM-L6-v2) |
-| **Vector Store** | FAISS (via LangChain) |
-| **PDF Processing** | PyMuPDF (tables, multi-column, layout-aware) |
-| **Language** | Python 3.11+ |
-| **Testing** | Pytest |
+- **Hybrid retrieval.** Dense embeddings catch paraphrase, and BM25 catches exact terms such as test names and helpline numbers. The corpus is small, so search is a brute-force NumPy dot product with no vector database.
+- **Safety checks before any model call.** They are reproducible: the same query always routes the same way. They are fail-safe: escalation still works when the API is down. And they are auditable, because a reviewer can read the rules.
+- **Scope by a similarity floor, not a topic blocklist.** If nothing in the knowledge base is close to the question, the bot refuses. Questions that name one of the five diseases use a lower floor (`RAG_SCOPE_THRESHOLD_NAMED`), because the English embedding model scores colloquial, misspelt and Hindi or Hinglish questions low. Hard negatives such as COVID-19, HIV and diabetes questions are still refused.
+- **Follow-up questions.** A question like "how does *it* spread?" borrows the disease named earlier in the conversation, so it is retrieved and scoped correctly.
 
 ---
 
-## 📁 Project Structure
+## 📁 Project structure
 
 ```
 healthcare-chatbot/
-├── .env.example                # Environment variable template
-├── .gitignore                  # Git ignore rules
-├── app.py                      # Main Streamlit entry point
-├── README.md                   # This file
-├── requirements.txt            # Python dependencies
-│
+├── app.py                      # Streamlit entry point
 ├── data/
-│   └── knowledge/              # RAG knowledge base documents (PDF format)
-│       ├── common_symptoms.pdf
-│       ├── first_aid.pdf
-│       ├── healthy_lifestyle.pdf
-│       ├── nutrition_guidelines.pdf
-│       └── preventive_healthcare.pdf
-│
-├── docs/                       # Documentation
-│   ├── Architecture_Presentation.pdf
-│   └── Logic_Documentation.pdf
-│
-├── src/                        # Source code modules
-│   ├── __init__.py
-│   ├── chatbot.py              # Core orchestrator
-│   ├── config.py               # Centralized configuration
-│   ├── document_loader.py      # Advanced document loading (PDF/MD/TXT)
-│   ├── embeddings.py           # HuggingFace embeddings (LangChain)
-│   ├── history.py              # Conversation memory (session_state)
-│   ├── llm.py                  # LangChain LLM factory (Gemini + Groq)
-│   ├── prompts.py              # System prompt & prompt builder
-│   ├── rag.py                  # RAG pipeline orchestrator
-│   ├── safety.py               # Safety guardrails (pre/post LLM)
+│   ├── knowledge/              # Curated knowledge base: one Markdown file per disease
+│   │   ├── dengue.md           #   YAML frontmatter: disease, title, sources (publisher/title/url),
+│   │   ├── malaria.md          #   retrieved, review_status. Sections: Overview, Symptoms,
+│   │   ├── typhoid.md          #   Warning signs, Transmission, Diagnosis and care, Prevention,
+│   │   ├── tuberculosis.md     #   Common misconceptions, When to seek care
+│   │   └── chikungunya.md
+│   └── archive/                # Previous general-health PDFs (not indexed)
+├── src/
+│   ├── chatbot.py              # Pipeline orchestrator (safety → retrieval → scope → generation)
+│   ├── config.py               # Configuration from environment variables
+│   ├── document_loader.py      # Markdown (frontmatter + sections), PDF and text loaders
+│   ├── embeddings.py           # Local HuggingFace sentence-transformers embeddings
+│   ├── history.py              # Conversation memory (Streamlit session_state)
+│   ├── llm.py                  # LangChain LLM factory (Gemini, Groq)
+│   ├── prompts.py              # System prompt, numbered-source prompt builder, refusal templates
+│   ├── rag.py                  # Hybrid retrieval + scope check
+│   ├── safety.py               # Deterministic pre-checks and output validation
 │   ├── ui.py                   # Streamlit UI components
-│   ├── utils.py                # Utility functions
-│   └── vectorstore.py          # FAISS vector store (LangChain)
-│
-├── tests/                      # Test suite
-│   ├── test_prompts.py
-│   └── test_safety.py
-│
-└── vectorstore/                # FAISS index cache (auto-generated)
+│   └── utils.py                # Logging, input sanitisation, source formatting
+└── tests/
+    ├── test_prompts.py         # System prompt and prompt builder
+    ├── test_rag.py             # Knowledge base, retrieval, scope check (in-scope vs hard negatives)
+    └── test_safety.py          # Emergency, diagnosis, prescription rules; output validation
 ```
 
 ---
 
-## 🚀 Installation & Setup
+## 🚀 Setup
 
-### Prerequisites
-- Python 3.11 or higher
-- A Google Gemini API key ([get one free](https://aistudio.google.com/apikey))
-- A Groq API key (Optional) ([get one free](https://console.groq.com/keys))
+Requires **Python 3.12** (newer versions may lack wheels for some dependencies). With [uv](https://docs.astral.sh/uv/):
 
-### Step 1: Clone the Repository
 ```bash
-git clone https://github.com/avi-gajera/healthcare-chatbot.git
-cd healthcare-chatbot
+uv venv --python 3.12 .venv
+.venv\Scripts\activate          # Windows
+source .venv/bin/activate       # macOS/Linux
+uv pip install -r requirements.txt
 ```
 
-### Step 2: Create Virtual Environment
+Copy `.env.example` to `.env` and add **one** API key:
+
 ```bash
-python -m venv .venv
-
-# Windows
-.\venv\Scripts\activate
-
-# macOS/Linux
-source .venv/bin/activate
+GROQ_API_KEY=your_key_here      # https://console.groq.com/keys
+# or
+GEMINI_API_KEY=your_key_here    # https://aistudio.google.com/apikey
 ```
 
-### Step 3: Install Dependencies
-```bash
-pip install -r requirements.txt
-```
+If `LLM_PROVIDER` is not set, the provider whose key is present is used. Then run:
 
-### Step 4: Configure Environment
-```bash
-# Copy the environment template
-cp .env.example .env
-
-# Edit .env and add your API keys
-# GEMINI_API_KEY=your_key_here
-# GROQ_API_KEY=your_key_here  (optional)
-```
-
-### Step 5: Run the Application
 ```bash
 streamlit run app.py
 ```
 
-The application will open in your browser at `http://localhost:8501`.
+The first start downloads the embedding model (~90 MB). The knowledge base is re-indexed on every start, so edits to `data/knowledge/*.md` take effect after a restart.
 
 ---
 
 ## ⚙️ Configuration
 
-All configuration is managed via environment variables in the `.env` file:
-
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_PROVIDER` | `gemini` | Active LLM provider (`gemini` or `groq`) |
-| `GEMINI_API_KEY` | — | Google Gemini API key (required for Gemini) |
-| `GEMINI_MODEL_NAME` | `gemini-2.5-flash` | Gemini model to use |
-| `GROQ_API_KEY` | — | Groq API key (required for Groq) |
-| `GROQ_MODEL_NAME` | `llama-3.3-70b-versatile` | Groq model to use |
-| `TEMPERATURE` | `0.3` | Generation temperature (0.0–1.0) |
+|---|---|---|
+| `LLM_PROVIDER` | auto | `gemini` or `groq`; if unset, whichever has an API key |
+| `GEMINI_API_KEY` / `GEMINI_MODEL_NAME` | — / `gemini-2.5-flash` | Google Gemini |
+| `GROQ_API_KEY` / `GROQ_MODEL_NAME` | — / `openai/gpt-oss-120b` | Groq |
+| `TEMPERATURE` | `0.3` | Generation temperature |
 | `MAX_TOKENS` | `2048` | Maximum response tokens |
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model |
-| `RAG_TOP_K` | `5` | Number of retrieved chunks |
-| `RAG_CHUNK_SIZE` | `1000` | Document chunk size |
-| `RAG_CHUNK_OVERLAP` | `200` | Chunk overlap for splitting |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Local sentence-transformers model |
+| `RAG_TOP_K` | `4` | Chunks given to the model as numbered sources |
+| `RAG_CHUNK_SIZE` / `RAG_CHUNK_OVERLAP` | `1000` / `150` | Splitting of long sections |
+| `RAG_DENSE_WEIGHT` / `RAG_BM25_WEIGHT` | `0.7` / `0.3` | Hybrid retrieval weights |
+| `RAG_SCOPE_THRESHOLD` | `0.52` | Similarity floor for questions not naming an in-scope disease |
+| `RAG_SCOPE_THRESHOLD_NAMED` | `0.20` | Similarity floor for questions naming one of the five diseases |
+
+The sidebar's **Show retrieval diagnostics** toggle displays each source's similarity score.
 
 ---
 
 ## 🧪 Testing
 
-Run the test suite:
 ```bash
-# Activate virtual environment first
 pytest tests/ -v
-
-# With coverage report
 pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-### Test Coverage
-- **Safety Guardrails** — 60+ test cases covering emergency detection, diagnosis prevention, prescription blocking, off-topic filtering, edge cases, and output validation
-- **Prompt Engineering** — System prompt content validation, LangChain message type checking, RAG context injection, health profile injection, full pipeline assembly
+`test_rag.py` loads the real embedding model and knowledge base. It checks that in-scope questions (including misspelt and Hinglish ones) pass the scope check, and that hard negatives such as COVID-19, HIV, diabetes, zika and cholera are refused.
 
 ---
 
-## 💡 Usage Examples
+## 💡 Example questions
 
-### General Health Questions
-- "What are the symptoms of the common cold?"
-- "How can I improve my diet?"
-- "What exercises are good for back pain?"
-
-### First Aid
-- "How do I treat a minor burn?"
-- "What should I do for a nosebleed?"
-- "What is the RICE method for sprains?"
-
-### Preventive Care
-- "What vaccinations do adults need?"
-- "How much water should I drink daily?"
-- "How can I improve my sleep quality?"
-
-### Safety Demonstrations
-- Emergency: "I'm having chest pain and can't breathe" → Immediate emergency response
-- Diagnosis: "What disease do I have?" → Polite redirect to a healthcare professional
-- Prescription: "What medicine should I take?" → Educational redirect
-- Off-topic: "Write me a poem" → Redirect to health topics
+- **Answered with citations:** "What are the warning signs of severe dengue?", "Do dengue mosquitoes bite only at night?", "Can TB spread through shared utensils?", "How is chikungunya different from dengue?", "TB kaise failta hai?"
+- **Emergency escalation:** "My son has dengue and keeps vomiting" → emergency response with 112/108
+- **Diagnosis refusal:** "Do I have malaria?", "My platelet count is 90000, is that normal?"
+- **Medication refusal:** "Which medicine is best for typhoid?", "Can I take paracetamol for dengue?"
+- **Out of scope:** "What are the symptoms of COVID-19?", "How to control diabetes?" → lists the five diseases it covers
 
 ---
 
-## 🛡️ Safety & Ethics
+## 🚧 Status and next steps
 
-This chatbot is designed with healthcare safety as the top priority:
-
-1. **Never Diagnoses** — Explicitly refuses to diagnose conditions
-2. **Never Prescribes** — Will not recommend specific medications
-3. **Emergency Detection** — Recognizes emergencies and provides emergency contacts
-4. **Disclaimers** — Every health response includes an appropriate medical disclaimer
-5. **Evidence-Based** — Responses grounded in WHO, CDC, NIH, and Mayo Clinic guidelines
-6. **Transparency** — Always identifies itself as an AI, not a healthcare provider
+- **Knowledge base review:** the five disease documents were written from WHO and CDC guidance but have `review_status: pending` and `retrieved: null`. Each fact should be checked against the linked source pages, the retrieval date filled in, and the content reviewed by the faculty mentor before evaluation (Phase 2).
+- **Evaluation harness (Phases 4–5):** a labelled JSONL test set across four categories (in-scope factual, emergency, diagnosis request, out-of-scope with hard negatives), metrics for routing accuracy, emergency recall, false refusal rate, groundedness and citation rate, ablations (dense-only, BM25-only, hybrid), and a threshold sweep to choose the operating point.
+- **Multilingual robustness (O4):** Hindi-script questions score low with the English-only embedding model. A multilingual model such as `paraphrase-multilingual-MiniLM-L12-v2` (set `EMBEDDING_MODEL`) is worth evaluating.
+- **Deviations from the synopsis stack:** embeddings are local sentence-transformers rather than the Gemini embedding API, so a Groq key alone is enough. Generation can use either Gemini or Groq.

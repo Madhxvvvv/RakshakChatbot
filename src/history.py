@@ -29,7 +29,7 @@ class ChatMessage:
     role: str
     content: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-    sources: Optional[list[dict[str, str]]] = None
+    sources: Optional[list[dict]] = None
 
 
 class ConversationHistory:
@@ -66,7 +66,7 @@ class ConversationHistory:
         self,
         role: str,
         content: str,
-        sources: Optional[list[dict[str, str]]] = None,
+        sources: Optional[list[dict]] = None,
     ) -> None:
         """Add a message to the conversation history.
 
@@ -126,7 +126,7 @@ class ConversationHistory:
 
         lines = [
             "=" * 60,
-            "Healthcare AI Assistant — Conversation Export",
+            "Public Health Chatbot — Conversation Export",
             f"Exported at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             f"Total messages: {self.get_message_count()}",
             "=" * 60,
@@ -139,8 +139,10 @@ class ConversationHistory:
             lines.append(msg.content)
             if msg.sources:
                 lines.append("\n📚 Sources:")
-                for src in msg.sources:
-                    lines.append(f"  - {src.get('source', 'Unknown')}")
+                for i, src in enumerate(msg.sources, 1):
+                    section = f" — {src['section']}" if src.get("section") else ""
+                    urls = ", ".join(r["url"] for r in src.get("references") or [] if r.get("url"))
+                    lines.append(f"  [{i}] {src.get('source', 'Unknown')}{section} ({urls})")
             lines.append("")
             lines.append("-" * 40)
             lines.append("")

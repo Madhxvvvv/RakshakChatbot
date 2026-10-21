@@ -1,13 +1,14 @@
 """UI helper functions for the Healthcare AI Chatbot.
 
 Contains Streamlit UI components: sidebar with LLM provider selector,
-health profile form, chat rendering, source display, and custom CSS styling.
+chat rendering, source display, and custom CSS styling.
 """
 
 import streamlit as st
 
 from src.config import GEMINI_MODELS, GROQ_MODELS, LLMProvider
 from src.history import ConversationHistory
+from src.utils import format_sources
 
 
 # =============================================================================
@@ -63,15 +64,6 @@ CUSTOM_CSS = """
     border-radius: 0 8px 8px 0;
     margin: 8px 0;
     color: #991b1b;
-}
-
-/* --- Health Profile Card --- */
-.profile-card {
-    background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 16px;
-    border: 1px solid #475569;
 }
 
 /* --- Source Citation --- */
@@ -172,24 +164,30 @@ def inject_custom_css() -> None:
 
 
 def render_sidebar(
-    history: ConversationHistory, show_uploader: bool = False
-) -> tuple[dict[str, str], LLMProvider, str, object | None]:
-    """Render the sidebar with LLM selector, health profile form, and controls.
+    history: ConversationHistory,
+    default_provider: LLMProvider = LLMProvider.GEMINI,
+    show_diagnostics_default: bool = False,
+) -> tuple[LLMProvider, str, bool]:
+    """Render the sidebar with scope info, LLM selector, and controls.
+
+    No personal or health data is collected (an explicit non-goal of the project).
 
     Args:
         history: The conversation history manager.
-        show_uploader: Whether to show the document uploader.
+        default_provider: Provider preselected in the dropdown.
+        show_diagnostics_default: Initial state of the retrieval diagnostics toggle.
 
     Returns:
-        Tuple of (health_profile_dict, selected_provider, selected_model, uploaded_file).
+        Tuple of (selected_provider, selected_model, show_diagnostics).
     """
     with st.sidebar:
         # App title and description
-        st.markdown("## 🏥 Healthcare AI Assistant")
+        st.markdown("## 🦟 Public Health Chatbot")
         st.markdown(
             "<p style='color: #94a3b8; font-size: 0.85rem;'>"
-            "Your AI-powered health information companion. "
-            "Ask questions about symptoms, nutrition, lifestyle, and more."
+            "Disease awareness for <strong>dengue, malaria, typhoid, tuberculosis "
+            "and chikungunya</strong>. Every answer is grounded in WHO and CDC guidance "
+            "and cites its sources."
             "</p>",
             unsafe_allow_html=True,
         )
@@ -198,10 +196,9 @@ def render_sidebar(
         st.markdown("### ⚠️ Medical Disclaimer")
         st.markdown(
             '<div class="disclaimer-banner">'
-            "<strong>Important:</strong> This AI assistant provides general health "
-            "information for educational purposes only. It is <strong>not</strong> a "
-            "substitute for professional medical advice, diagnosis, or treatment. "
-            "Always consult a qualified healthcare provider."
+            "<strong>Important:</strong> This is an awareness tool only. It does "
+            "<strong>not</strong> diagnose, prescribe, or replace a doctor. "
+            "In an emergency, call <strong>112</strong> or <strong>108</strong> (India)."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -215,7 +212,7 @@ def render_sidebar(
         selected_provider_name = st.selectbox(
             "Select Provider",
             options=provider_options,
-            index=0,
+            index=0 if default_provider == LLMProvider.GEMINI else 1,
             key="llm_provider_select",
             help="Choose which AI model to use for generating responses.",
         )
@@ -240,84 +237,14 @@ def render_sidebar(
             help="Choose the specific model to use.",
         )
 
-        st.divider()
-
-        # --- Health Profile Section ---
-        st.markdown("### 👤 Your Health Profile")
-        st.markdown(
-            "<p style='color: #94a3b8; font-size: 0.8rem;'>"
-            "Share details for more personalized responses (optional)."
-            "</p>",
-            unsafe_allow_html=True,
+        show_diagnostics = st.toggle(
+            "🔎 Show retrieval diagnostics",
+            value=show_diagnostics_default,
+            key="show_diagnostics",
+            help="Show the similarity score of each retrieved source.",
         )
-
-        # Initialize health profile in session state
-        if "health_profile" not in st.session_state:
-            st.session_state.health_profile = {
-                "Age": "",
-                "Gender": "",
-                "Known Conditions": "",
-                "Allergies": "",
-                "Current Medications": "",
-                "Lifestyle Notes": "",
-            }
-
-        profile = st.session_state.health_profile
-
-        col1, col2 = st.columns(2)
-        with col1:
-            profile["Age"] = st.text_input(
-                "Age",
-                value=profile.get("Age", ""),
-                placeholder="e.g., 30",
-                key="profile_age",
-            )
-        with col2:
-            profile["Gender"] = st.selectbox(
-                "Gender",
-                options=["", "Male", "Female", "Non-binary", "Prefer not to say"],
-                index=0,
-                key="profile_gender",
-            )
-
-        profile["Known Conditions"] = st.text_input(
-            "Known Conditions",
-            value=profile.get("Known Conditions", ""),
-            placeholder="e.g., Diabetes, Hypertension",
-            key="profile_conditions",
-        )
-
-        profile["Allergies"] = st.text_input(
-            "Allergies",
-            value=profile.get("Allergies", ""),
-            placeholder="e.g., Penicillin, Peanuts",
-            key="profile_allergies",
-        )
-
-        profile["Current Medications"] = st.text_input(
-            "Current Medications",
-            value=profile.get("Current Medications", ""),
-            placeholder="e.g., Metformin, Lisinopril",
-            key="profile_medications",
-        )
-
-        profile["Lifestyle Notes"] = st.text_area(
-            "Lifestyle Notes",
-            value=profile.get("Lifestyle Notes", ""),
-            placeholder="e.g., Vegetarian, exercises 3x/week",
-            height=68,
-            key="profile_lifestyle",
-        )
-
-        st.session_state.health_profile = profile
 
         st.divider()
-
-        # --- Document Uploader ---
-        uploaded_file = None
-        if show_uploader:
-            uploaded_file = render_document_upload()
-            st.divider()
 
         # --- Controls Section ---
         st.markdown("### ⚙️ Controls")
@@ -350,12 +277,12 @@ def render_sidebar(
             f"<p style='color: #64748b; font-size: 0.7rem; text-align: center;'>"
             f"{provider_info}"
             f"Built with Streamlit + LangChain<br>"
-            f"RAG-enabled with FAISS"
+            f"Hybrid retrieval: embeddings + BM25"
             f"</p>",
             unsafe_allow_html=True,
         )
 
-    return profile, selected_provider, selected_model, uploaded_file
+    return selected_provider, selected_model, show_diagnostics
 
 
 # =============================================================================
@@ -369,10 +296,11 @@ def render_welcome_message() -> None:
         '<div class="welcome-card">'
         '<h2 style="margin: 0 0 8px 0; color: #1e40af;">👋 Welcome!</h2>'
         '<p style="color: #3b82f6; margin: 0 0 16px 0; font-size: 1.05rem;">'
-        "I'm your Healthcare AI Assistant, here to help with general health questions."
+        "Ask me about dengue, malaria, typhoid, tuberculosis or chikungunya."
         "</p>"
         '<p style="color: #64748b; margin: 0 0 16px 0; font-size: 0.9rem;">'
-        "Ask me about symptoms, nutrition, healthy lifestyle, preventive care, first aid, and more."
+        "Symptoms, how they spread, prevention, warning signs and when to seek care — "
+        "every answer cites WHO and CDC guidance. I can't diagnose or recommend medicines."
         "</p>"
         "</div>",
         unsafe_allow_html=True,
@@ -382,12 +310,12 @@ def render_welcome_message() -> None:
     st.markdown("#### 💡 Try asking about:")
     cols = st.columns(3)
     sample_questions = [
-        ("🤒", "Common cold symptoms"),
-        ("🥗", "Balanced diet tips"),
-        ("💪", "Exercise recommendations"),
-        ("🩹", "Basic first aid for burns"),
-        ("😴", "Better sleep habits"),
-        ("🧠", "Managing stress"),
+        ("🦟", "What are the warning signs of severe dengue?"),
+        ("🌙", "Do dengue mosquitoes bite only at night?"),
+        ("🦟", "How does malaria spread?"),
+        ("💧", "How can I prevent typhoid?"),
+        ("🫁", "Can TB spread through shared utensils?"),
+        ("🦵", "How is chikungunya different from dengue?"),
     ]
 
     for i, (emoji, question) in enumerate(sample_questions):
@@ -401,11 +329,12 @@ def render_welcome_message() -> None:
                 st.rerun()
 
 
-def render_chat_history(history: ConversationHistory) -> None:
+def render_chat_history(history: ConversationHistory, show_diagnostics: bool = False) -> None:
     """Render the chat history with styled messages.
 
     Args:
         history: The conversation history manager.
+        show_diagnostics: Show retrieval similarity next to each source.
     """
     for msg in history.messages:
         with st.chat_message(msg.role, avatar="🧑‍💻" if msg.role == "user" else "🏥"):
@@ -413,7 +342,7 @@ def render_chat_history(history: ConversationHistory) -> None:
 
             # Show sources if available
             if msg.sources:
-                display_sources(msg.sources)
+                display_sources(msg.sources, show_diagnostics=show_diagnostics)
 
 
 def render_provider_badges(
@@ -436,47 +365,25 @@ def render_provider_badges(
     badges = f'<span class="{badge_class}">{provider_label}</span> '
 
     if rag_enabled:
-        badges += '<span class="feature-badge">📚 RAG Enabled</span> '
+        badges += '<span class="feature-badge">📚 WHO / CDC sources</span> '
 
     badges += (
         '<span class="feature-badge">🛡️ Safety Guardrails</span> '
-        '<span class="feature-badge">💬 Conversation Memory</span>'
+        '<span class="feature-badge">🎯 5 diseases only</span>'
     )
 
     st.markdown(badges, unsafe_allow_html=True)
 
 
-def display_sources(sources: list[dict[str, str]]) -> None:
-    """Display RAG source citations in an expander.
+def display_sources(sources: list[dict], show_diagnostics: bool = False) -> None:
+    """Display the numbered sources behind an answer's [n] citations.
 
     Args:
-        sources: List of source dicts with 'source' key.
+        sources: Source dicts with 'source', 'section', 'references', 'similarity'.
+        show_diagnostics: Show retrieval similarity for each source.
     """
     if not sources:
         return
 
     with st.expander("📚 Sources", expanded=False):
-        for i, src in enumerate(sources, 1):
-            source_name = src.get("source", "Unknown source")
-            st.markdown(f"**{i}.** {source_name}")
-
-def render_document_upload() -> object | None:
-    """Render a file uploader for dynamic PDF ingestion.
-
-    Returns:
-        The uploaded file object if a file is uploaded, else None.
-    """
-    st.markdown("### 📄 Upload medical reports")
-    st.markdown(
-        "<div style='font-size: 0.85rem; color: #64748b; margin-bottom: 10px;'>"
-        "Upload a medical PDF. It will be temporarily added to the AI's "
-        "knowledge base for this session only."
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    return st.file_uploader(
-        "Choose a PDF file",
-        type=["pdf"],
-        help="The file is stored in-memory for this session only.",
-        label_visibility="collapsed",
-    )
+        st.markdown(format_sources(sources, show_similarity=show_diagnostics))

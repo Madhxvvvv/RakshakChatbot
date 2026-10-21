@@ -1,7 +1,9 @@
 """Safety guardrails for the Healthcare AI Chatbot.
 
 Implements pre-generation input checking (emergency detection, diagnosis/prescription
-prevention, off-topic filtering) and post-generation output validation.
+prevention) and post-generation output validation. These are deterministic rules,
+so identical queries always route identically and escalation works even if the
+LLM API is down.
 All safety checks run BEFORE the LLM is called to avoid unnecessary API usage
 and ensure instant responses for critical situations.
 """
@@ -19,7 +21,6 @@ class SafetyAction(Enum):
     EMERGENCY = "emergency"  # Bypass LLM, return emergency response
     BLOCK_DIAGNOSIS = "block_diagnosis"  # Redirect: diagnosis request
     BLOCK_PRESCRIPTION = "block_prescription"  # Redirect: prescription request
-    REDIRECT_OFF_TOPIC = "redirect_off_topic"  # Redirect: non-health query
 
 
 @dataclass
@@ -97,11 +98,27 @@ _EMERGENCY_PATTERNS = [
     r"(?:someone|he|she)\s+(?:is|has)\s+(?:not\s+)?(?:breathing|conscious|responsive)",
     r"(?:severe|heavy|uncontrollable)\s+(?:pain|bleeding)",
     r"(?:i|he|she|they)\s+(?:overdosed|took\s+too\s+(?:many|much))",
+    # Warning signs of severe dengue / malaria / typhoid / TB, when described as
+    # happening to someone ("I am", "my son has", "she keeps") rather than asked about.
+    r"\b(?:i|i'm|im|i've|my\s+\w+|he|she|they|he's|she's|they're)\b[^.?!]{0,40}"
+    r"(?:vomiting\s+blood|(?:coughing|cough(?:s|ed)?)\s+(?:up\s+)?blood"
+    r"|blood\s+in\s+(?:\w+\s+)?(?:vomit|stool|stools|urine|poo)"
+    r"|black\s+(?:tarry\s+)?stools?|bleeding\s+(?:from\s+(?:the\s+)?)?(?:gums|nose)"
+    r"|severe\s+(?:abdominal|stomach|belly)\s+pain|(?:keeps?|persistent(?:ly)?)\s+vomiting"
+    r"|can(?:not|'t|t)\s+(?:keep\s+(?:any\s+)?(?:fluids|water|anything)\s+down|drink)"
+    r"|convulsions?|fits\b|very\s+(?:drowsy|confused)|confused\s+and|dark\s+urine"
+    r"|cold\s+(?:and\s+)?clammy)",
 ]
 
 # =============================================================================
 # Diagnosis Request Patterns
 # =============================================================================
+
+# Regex alternation for the five in-scope diseases, used in the patterns below
+_DISEASE = (
+    r"(?:dengu\w*|mal[ae]?ria\w*|typh?(?:oi|io)d\w*|tyfoid\w*|enteric\s+fever"
+    r"|tuberc?u?losis|t\.?b\b|chi[ck]+[ue]n?g[ou]n[iy]*[ae]?\w*)"
+)
 
 _DIAGNOSIS_KEYWORDS = [
     "what disease do i have",
@@ -126,6 +143,14 @@ _DIAGNOSIS_PATTERNS = [
     r"do\s+i\s+(?:have|suffer\s+from)\s+(?:a\s+)?(?:\w+\s+){0,3}(?:disease|cancer|disorder|syndrome|illness)",
     r"(?:tell|give)\s+me\s+(?:my|a)\s+diagnosis",
     r"(?:i\s+think\s+i\s+have|could\s+i\s+have).*(?:confirm|verify|check)",
+    # Personal diagnosis of the five in-scope diseases
+    rf"\b(?:do|could|might|can)\s+(?:i|we)\s+(?:have|be\s+having|have\s+got|got)\s+{_DISEASE}",
+    rf"\b(?:does|could|might|can)\s+(?:my\s+\w+|he|she|they|it)\s+(?:have|has|be|got)\s+{_DISEASE}",
+    rf"\b(?:is|could|might|can)\s+(?:it|this|that|mine)\s+(?:be\s+)?{_DISEASE}",
+    rf"\b(?:am\s+i|is\s+(?:my\s+\w+|he|she))\s+(?:infected\s+with|suffering\s+from)\s+{_DISEASE}",
+    # Interpreting a personal test report
+    r"\b(?:my|his|her|our)\s+(?:\w+\s+){0,3}(?:report|test|result|results|count|smear)\b"
+    r"[^?]*\b(?:mean|normal|positive|negative|serious|dangerous|okay|ok)\b",
 ]
 
 # =============================================================================
@@ -154,38 +179,15 @@ _PRESCRIPTION_PATTERNS = [
     r"(?:give|write)\s+(?:me\s+)?(?:a\s+)?prescription",
     r"(?:what|how\s+much)\s+(?:dosage|dose)\s+(?:should|do)\s+i",
     r"(?:should|can)\s+i\s+(?:take|use|try)\s+(?:\w+\s+){0,2}(?:mg|tablet|pill|capsule)",
+    # Treatment choice for the five in-scope diseases
+    rf"\b(?:which|what|best|good)\s+(?:\w+\s+){{0,2}}(?:medicine|medication|drug|tablet|antibiotic|injection)s?\b[^?]*\b{_DISEASE}",
+    # Taking or giving a named medicine (stopping is excluded: "can I stop TB
+    # medicines early?" is a misconception the knowledge base answers)
+    r"\b(?:can|should|may|could)\s+(?:i|we|he|she|they|my\s+\w+)\s+(?:take|give|use|start|have)\s+"
+    r"(?:\w+\s+){0,3}(?:paracetamol|acetaminophen|ibuprofen|aspirin|crocin|dolo|calpol|combiflam"
+    r"|antibiotics?|chloroquine|artemisinin|azithromycin|ciprofloxacin|syrup|injection|drip)",
+    r"\b(?:dose|dosage)\s+(?:of|for)\b",
 ]
-
-# =============================================================================
-# Off-Topic Detection
-# =============================================================================
-
-# Health-related keywords that indicate the query IS on-topic
-_HEALTH_KEYWORDS = [
-    "health", "medical", "medicine", "doctor", "hospital", "symptom", "disease",
-    "illness", "pain", "ache", "fever", "cold", "flu", "cough", "headache",
-    "nutrition", "diet", "exercise", "vitamin", "mineral", "protein",
-    "calories", "weight", "bmi", "blood", "pressure", "sugar", "diabetes",
-    "heart", "lung", "liver", "kidney", "brain", "bone", "muscle", "joint",
-    "skin", "rash", "allergy", "allergic", "infection", "virus", "bacteria",
-    "vaccine", "vaccination", "immunization", "antibiotic", "therapy",
-    "mental health", "anxiety", "depression", "stress", "sleep", "insomnia",
-    "pregnancy", "prenatal", "postnatal", "baby", "child", "pediatric",
-    "first aid", "cpr", "bandage", "wound", "burn", "fracture", "sprain",
-    "cancer", "tumor", "cholesterol", "thyroid", "asthma", "arthritis",
-    "hydration", "water", "wellness", "fitness", "yoga", "meditation",
-    "dental", "teeth", "eye", "vision", "ear", "hearing", "stomach",
-    "digestion", "nausea", "vomiting", "diarrhea", "constipation",
-    "breathing", "respiratory", "immune", "inflammation", "swelling",
-    "fatigue", "tired", "dizzy", "dizziness", "faint", "chest",
-    "body", "physical", "preventive", "screening", "checkup",
-    "healthy", "unhealthy", "recover", "treatment", "heal", "cure",
-    "surgical", "surgery", "operation", "therapy", "rehabilitation",
-    "pharmacy", "pharmaceutical", "supplement", "herbal", "remedy",
-    "covid", "coronavirus", "pandemic", "hygiene", "sanitation",
-    "calorie", "carb", "fat", "fiber", "food", "eating", "meal",
-]
-
 
 class SafetyGuardrails:
     """Pre-generation and post-generation safety checks for the healthcare chatbot.
@@ -231,13 +233,8 @@ class SafetyGuardrails:
         if prescription_result:
             return prescription_result
 
-        # 4. Off-topic handling — delegated to the LLM
-        # Instead of fragile keyword matching, the LLM's system prompt instructs
-        # it to stay on health topics and politely redirect non-health queries.
-        # This is more accurate because the LLM understands context, synonyms,
-        # meta-conversational queries, and nuance that keyword lists cannot.
-
-        # All safety checks passed — let the LLM handle it
+        # Scope (the five diseases only) is decided after retrieval by the
+        # similarity floor in RAGPipeline, not here.
         return SafetyResult(
             action=SafetyAction.PROCEED,
             reason="Input passed all safety checks.",
@@ -257,6 +254,9 @@ class SafetyGuardrails:
         """
         from src.prompts import DISCLAIMER_TEXT
 
+        # Normalise citation brackets: some models emit 【2】 instead of [2]
+        response = re.sub(r"【\s*(\d+)\s*】", r"[\1]", response)
+
         # Check if the response contains potentially unsafe prescriptive language
         prescriptive_patterns = [
             r"(?:you\s+should|i\s+recommend)\s+(?:take|taking)\s+\d+\s*(?:mg|ml|tablet|pill|capsule)",
@@ -275,7 +275,13 @@ class SafetyGuardrails:
         # Ensure disclaimer is present for health-related responses
         if not any(
             marker in response.lower()
-            for marker in ["disclaimer", "not a substitute", "consult", "healthcare provider"]
+            for marker in [
+                "disclaimer",
+                "not a substitute",
+                "consult",
+                "healthcare provider",
+                "medical advice",
+            ]
         ):
             response += f"\n\n{DISCLAIMER_TEXT}"
 
@@ -353,49 +359,3 @@ class SafetyGuardrails:
             )
         return None
 
-    def _detect_off_topic(self, query_lower: str) -> Optional[SafetyResult]:
-        """Check if the query is clearly unrelated to healthcare.
-
-        Uses a generous allowlist approach — only redirects when there's
-        high confidence the query is off-topic. Borderline queries are
-        allowed through so the LLM (with its system prompt constraints)
-        can handle them more nuancedly.
-        """
-        # Short queries (under 3 words) get the benefit of the doubt
-        words = query_lower.split()
-        if len(words) < 3:
-            return None
-
-        # Check for simple greetings/acknowledgments that should always pass
-        greeting_starters = [
-            "hi", "hello", "hey", "thanks", "thank you", "okay", "ok",
-            "yes", "no", "good morning", "good evening", "good night",
-        ]
-        for starter in greeting_starters:
-            if query_lower.startswith(starter):
-                return None
-
-        # Check for meta-conversational keywords (queries about the chat itself)
-        # These should always pass through so the LLM can use conversation history
-        meta_keywords = [
-            "question", "query", "asked", "said", "last", "previous", "earlier",
-            "first", "second", "third", "above", "before", "conversation",
-            "chat", "history", "remember", "mentioned", "told", "summarize",
-            "summary", "repeat", "again", "clarify", "explain more", "what did",
-            "you said", "i said", "go back", "follow up", "more about",
-            "tell me more", "answer", "response", "replied", "recall", "recap",
-        ]
-        for keyword in meta_keywords:
-            if keyword in query_lower:
-                return None
-
-        # Check if any health keyword appears in the query
-        for keyword in _HEALTH_KEYWORDS:
-            if keyword in query_lower:
-                return None
-
-        # If we get here, the query likely has nothing to do with health
-        return SafetyResult(
-            action=SafetyAction.REDIRECT_OFF_TOPIC,
-            reason="Query does not appear to be health-related.",
-        )

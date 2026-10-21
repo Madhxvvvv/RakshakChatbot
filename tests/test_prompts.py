@@ -1,16 +1,15 @@
 """Tests for the prompt engineering module.
 
-Covers system prompt content, prompt builder with LangChain message types,
-and health profile injection.
+Covers system prompt content (scope, citation rules), response templates,
+and the prompt builder with LangChain message types.
 """
-
-import pytest
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.prompts import (
     DISCLAIMER_TEXT,
     EMERGENCY_RESPONSE,
+    OUT_OF_SCOPE_RESPONSE,
     SYSTEM_PROMPT,
     build_prompt,
 )
@@ -30,8 +29,23 @@ class TestSystemPrompt:
 
     def test_system_prompt_contains_identity(self) -> None:
         """System prompt should define the assistant's identity."""
-        assert "healthcare" in SYSTEM_PROMPT.lower()
+        assert "health" in SYSTEM_PROMPT.lower()
         assert "assistant" in SYSTEM_PROMPT.lower()
+
+    def test_system_prompt_limits_scope_to_five_diseases(self) -> None:
+        """System prompt should name exactly the five in-scope diseases."""
+        for disease in ["dengue", "malaria", "typhoid", "tuberculosis", "chikungunya"]:
+            assert disease in SYSTEM_PROMPT.lower()
+
+    def test_system_prompt_requires_citations(self) -> None:
+        """System prompt should require [n] citations and forbid outside knowledge."""
+        assert "cite" in SYSTEM_PROMPT.lower()
+        assert "outside knowledge" in SYSTEM_PROMPT.lower()
+
+    def test_out_of_scope_response_lists_diseases(self) -> None:
+        """The out-of-scope refusal should tell the user what is in scope."""
+        for disease in ["Dengue", "Malaria", "Typhoid", "Tuberculosis", "Chikungunya"]:
+            assert disease in OUT_OF_SCOPE_RESPONSE
 
     def test_system_prompt_forbids_diagnosis(self) -> None:
         """System prompt should explicitly forbid diagnosis."""
@@ -50,6 +64,7 @@ class TestSystemPrompt:
         assert "emergency" in EMERGENCY_RESPONSE.lower()
         assert "911" in EMERGENCY_RESPONSE
         assert "112" in EMERGENCY_RESPONSE
+        assert "108" in EMERGENCY_RESPONSE
 
     def test_disclaimer_exists(self) -> None:
         """Disclaimer text should exist and contain key phrases."""
@@ -77,7 +92,7 @@ class TestBuildPrompt:
         """System prompt should always be the first message as SystemMessage."""
         messages = build_prompt("What is a cold?", [])
         assert isinstance(messages[0], SystemMessage)
-        assert "healthcare" in messages[0].content.lower()
+        assert messages[0].content.startswith(SYSTEM_PROMPT)
 
     def test_user_query_is_last(self) -> None:
         """User query should be the last message as HumanMessage."""
@@ -102,86 +117,54 @@ class TestBuildPrompt:
         # At least the history assistant msg
         assert len(ai_msgs) >= 1
 
-    def test_includes_rag_context(self) -> None:
-        """RAG context should be injected as HumanMessage + AIMessage pair."""
+    def test_includes_numbered_sources(self) -> None:
+        """Retrieved chunks should appear in the system message as numbered sources."""
         context = [
-            {"content": "A cold is a viral infection.", "source": "Common Symptoms"},
+            {
+                "content": "Aedes mosquitoes bite mainly during the day.",
+                "source": "Dengue and severe dengue",
+                "section": "Transmission",
+                "references": [{"publisher": "WHO", "url": "https://www.who.int"}],
+            },
+            {"content": "Malaria is spread by Anopheles mosquitoes.", "source": "Malaria"},
         ]
-        messages = build_prompt("What is a cold?", [], retrieved_context=context)
+        messages = build_prompt("When do dengue mosquitoes bite?", [], retrieved_context=context)
 
-        # Should have system + RAG human + RAG AI + user query = at least 4 messages
-        assert len(messages) >= 4
-
-        # RAG context should appear as a HumanMessage
-        rag_found = any(
-            isinstance(m, HumanMessage) and "reference information" in m.content.lower()
-            for m in messages
-        )
-        assert rag_found, "RAG context injection not found in messages"
-
-        # Should be followed by an AIMessage acknowledgment
-        rag_ack = any(
-            isinstance(m, AIMessage) and "evidence-based" in m.content.lower()
-            for m in messages
-        )
-        assert rag_ack, "RAG acknowledgment AIMessage not found"
+        system_msg = messages[0].content
+        assert "[1] Dengue and severe dengue — Transmission (WHO)" in system_msg
+        assert "Aedes mosquitoes bite mainly during the day." in system_msg
+        assert "[2] Malaria" in system_msg
+        # Sources live in the system message: no extra turns are added
+        assert len(messages) == 2
 
     def test_no_rag_context(self) -> None:
-        """Without RAG context, messages should just be SystemMessage + HumanMessage."""
+        """Without sources, the model is told it has no verified information."""
         messages = build_prompt("What is a cold?", [])
         assert len(messages) == 2
         assert isinstance(messages[0], SystemMessage)
         assert isinstance(messages[1], HumanMessage)
-
-    def test_health_profile_injection(self) -> None:
-        """Health profile should be injected into the SystemMessage content."""
-        profile = {
-            "Age": "30",
-            "Gender": "Male",
-            "Known Conditions": "Diabetes",
-            "Allergies": "",
-        }
-        messages = build_prompt("Nutrition tips?", [], user_health_profile=profile)
-
-        system_msg = messages[0].content
-        assert "Age: 30" in system_msg
-        assert "Gender: Male" in system_msg
-        assert "Diabetes" in system_msg
-        # Empty fields should not appear
-        assert "Allergies" not in system_msg
-
-    def test_empty_health_profile(self) -> None:
-        """Empty health profile should not modify system prompt."""
-        profile = {"Age": "", "Gender": "", "Known Conditions": ""}
-        messages_with = build_prompt("Hi", [], user_health_profile=profile)
-        messages_without = build_prompt("Hi", [])
-
-        # System prompts should be identical (no profile injected)
-        assert messages_with[0].content == messages_without[0].content
+        assert "no sources were retrieved" in messages[0].content.lower()
 
     def test_full_pipeline(self) -> None:
         """Test the complete prompt assembly with all components."""
         history = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi!"},
+            {"role": "user", "content": "Tell me about typhoid"},
+            {"role": "assistant", "content": "Typhoid is a bacterial infection [1]."},
         ]
-        context = [{"content": "Vitamin C helps immunity.", "source": "Nutrition"}]
-        profile = {"Age": "25", "Known Conditions": "Asthma"}
+        context = [{"content": "Typhoid spreads through contaminated food.", "source": "Typhoid fever"}]
 
         messages = build_prompt(
-            user_query="Tell me about vitamin C",
+            user_query="How does it spread?",
             conversation_history=history,
             retrieved_context=context,
-            user_health_profile=profile,
         )
 
-        # Verify structure
         assert isinstance(messages[0], SystemMessage)
-        assert "Asthma" in messages[0].content
+        assert "contaminated food" in messages[0].content
         assert isinstance(messages[-1], HumanMessage)
-        assert messages[-1].content == "Tell me about vitamin C"
-        # system + RAG(2) + history(2) + user = 6
-        assert len(messages) >= 6
+        assert messages[-1].content == "How does it spread?"
+        # system + history(2) + user = 4
+        assert len(messages) == 4
 
     def test_message_type_mapping(self) -> None:
         """History roles should map to correct LangChain message types."""

@@ -1,4 +1,4 @@
-"""Healthcare AI Chatbot — Main Application Entry Point.
+"""Public Health Chatbot for Disease Awareness — Main Application Entry Point.
 
 Run with: streamlit run app.py
 """
@@ -8,7 +8,7 @@ import logging
 import streamlit as st
 
 from src.chatbot import HealthcareChatbot
-from src.config import AppConfig, LLMProvider, get_config
+from src.config import AppConfig, get_config
 from src.history import ConversationHistory
 from src.rag import RAGPipeline
 from src.ui import (
@@ -18,11 +18,8 @@ from src.ui import (
     render_provider_badges,
     render_sidebar,
     render_welcome_message,
-    render_document_upload,
 )
 from src.utils import setup_logging
-import tempfile
-from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -35,17 +32,17 @@ logger = logging.getLogger(__name__)
 # Page Configuration
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Healthcare AI Assistant",
-    page_icon="🏥",
+    page_title="Public Health Chatbot",
+    page_icon="🦟",
     layout="centered",
     initial_sidebar_state="expanded",
     menu_items={
         "About": (
-            "# Healthcare AI Assistant\n"
-            "An AI-powered health information chatbot built with "
-            "Streamlit, LangChain, and powered by Gemini / Groq.\n\n"
-            "⚠️ This tool is for educational purposes only. "
-            "Always consult a healthcare professional for medical advice."
+            "# AI-Driven Public Health Chatbot for Disease Awareness\n"
+            "Answers questions on dengue, malaria, typhoid, tuberculosis and "
+            "chikungunya using a curated WHO/CDC knowledge base, with source citations.\n\n"
+            "⚠️ This tool is for awareness only. It does not diagnose or prescribe. "
+            "Always consult a healthcare professional."
         ),
     },
 )
@@ -62,8 +59,8 @@ def load_config() -> AppConfig:
     return get_config()
 
 
-@st.cache_resource(show_spinner="Initializing knowledge base (this may take a moment)...")
-def load_rag_pipeline_v2(_config: AppConfig) -> RAGPipeline | None:
+@st.cache_resource(show_spinner="Indexing the disease knowledge base...")
+def load_rag_pipeline(_config: AppConfig) -> RAGPipeline | None:
     """Initialize and cache the RAG pipeline.
 
     Args:
@@ -77,11 +74,10 @@ def load_rag_pipeline_v2(_config: AppConfig) -> RAGPipeline | None:
         if rag.initialize():
             logger.info("RAG pipeline initialized successfully.")
             return rag
-        else:
-            logger.warning("RAG pipeline initialization failed. Running without RAG.")
-            return None
+        logger.error("RAG pipeline initialization failed: no chunks indexed.")
+        return None
     except Exception as e:
-        logger.error("RAG pipeline error: %s", e)
+        logger.error("RAG pipeline error: %s", e, exc_info=True)
         return None
 
 
@@ -92,56 +88,29 @@ def load_rag_pipeline_v2(_config: AppConfig) -> RAGPipeline | None:
 
 def main() -> None:
     """Main application function."""
-    # Inject custom styles
     inject_custom_css()
 
-    # Load configuration
     try:
         config = load_config()
     except ValueError as e:
         st.error(str(e))
         st.stop()
 
-    # Initialize conversation history
     history = ConversationHistory(max_history=20)
 
-    # Initialize RAG pipeline (cached)
-    rag_pipeline = load_rag_pipeline_v2(config)
-    show_uploader = bool(rag_pipeline and rag_pipeline.is_initialized)
+    # The chatbot answers only from the knowledge base, so it cannot run without it.
+    rag_pipeline = load_rag_pipeline(config)
+    if rag_pipeline is None:
+        st.error(
+            "⚠️ The disease knowledge base could not be loaded, so the chatbot cannot "
+            "answer safely. Check that `data/knowledge/` contains the disease files and "
+            "see the terminal logs for details."
+        )
+        st.stop()
 
-    # Render sidebar and get user selections
-    health_profile, selected_provider, selected_model, uploaded_file = render_sidebar(
-        history, show_uploader=show_uploader
+    selected_provider, selected_model, show_diagnostics = render_sidebar(
+        history, default_provider=config.llm.provider
     )
-
-    # --- Document Upload Processing ---
-    if show_uploader and uploaded_file is not None:
-        # Use file ID (or name + size) to track if it's already ingested
-        file_hash = f"{uploaded_file.name}_{uploaded_file.size}"
-        if "ingested_files" not in st.session_state:
-            st.session_state.ingested_files = set()
-            
-        if file_hash not in st.session_state.ingested_files:
-            with st.spinner("Processing PDF..."):
-                # Save to a temporary file that automatically deletes when closed
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(uploaded_file.getvalue())
-                    tmp_path = Path(tmp.name)
-                    
-                # Ingest the temporary file
-                chunks_added = rag_pipeline.ingest_single_document(tmp_path)
-                
-                # Clean up the temporary file manually just to be safe
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except Exception as e:
-                    logger.error(f"Failed to delete temp file {tmp_path}: {e}")
-                    
-                if chunks_added > 0:
-                    st.session_state.ingested_files.add(file_hash)
-                    st.sidebar.success(f"Added '{uploaded_file.name}' for this session!")
-                else:
-                    st.sidebar.error("Failed to process the PDF.")
 
     # --- LLM Provider Management ---
     # Track provider/model changes to reinitialize the chatbot
@@ -180,58 +149,54 @@ def main() -> None:
     chatbot: HealthcareChatbot = st.session_state.chatbot
 
     # --- Main Chat Area ---
-    st.markdown("# 🏥 Healthcare AI Assistant")
+    st.markdown("# 🦟 Public Health Chatbot")
 
-    # Show provider and feature badges
     render_provider_badges(
         provider=selected_provider,
         model=selected_model,
-        rag_enabled=rag_pipeline is not None and rag_pipeline.is_initialized,
+        rag_enabled=rag_pipeline.is_initialized,
     )
 
     st.markdown("")  # Spacing
 
-    # Show welcome message or chat history
     if history.is_empty():
         render_welcome_message()
     else:
-        render_chat_history(history)
+        render_chat_history(history, show_diagnostics=show_diagnostics)
 
     # --- Handle suggested question ---
     if "suggested_question" in st.session_state:
         user_input = st.session_state.pop("suggested_question")
-        _handle_user_input(user_input, chatbot, history, health_profile)
+        _handle_user_input(user_input, chatbot, history, show_diagnostics)
 
     # --- Chat Input ---
     if user_input := st.chat_input(
-        "Ask a health question...",
+        "Ask about dengue, malaria, typhoid, TB or chikungunya...",
         key="chat_input",
     ):
-        _handle_user_input(user_input, chatbot, history, health_profile)
+        _handle_user_input(user_input, chatbot, history, show_diagnostics)
 
 
 def _handle_user_input(
     user_input: str,
     chatbot: HealthcareChatbot,
     history: ConversationHistory,
-    health_profile: dict[str, str],
+    show_diagnostics: bool,
 ) -> None:
     """Process user input and generate a response.
+
+    The user message is added to history only after the response is generated,
+    so the chatbot's context history does not already contain the current query.
 
     Args:
         user_input: The user's message.
         chatbot: The chatbot orchestrator.
         history: Conversation history manager.
-        health_profile: User's health profile data.
+        show_diagnostics: Show retrieval similarity next to sources.
     """
-    # Display user message
     with st.chat_message("user", avatar="🧑‍💻"):
         st.markdown(user_input)
 
-    # Add to history
-    history.add_message("user", user_input)
-
-    # Generate and display assistant response
     with st.chat_message("assistant", avatar="🏥"):
         # Use streaming for real-time token display
         response_placeholder = st.empty()
@@ -239,32 +204,23 @@ def _handle_user_input(
         sources = None
 
         try:
-            for result in chatbot.process_query_stream(
-                user_query=user_input,
-                user_health_profile=health_profile,
-            ):
-                if result.get("is_safety_redirect") and result.get("chunk"):
-                    # Safety redirects are displayed all at once
-                    full_response = result["chunk"]
-                    response_placeholder.markdown(full_response)
-                    sources = result.get("sources")
-                    break
-
+            for result in chatbot.process_query_stream(user_query=user_input):
                 chunk = result.get("chunk", "")
                 if chunk:
                     full_response += chunk
                     response_placeholder.markdown(full_response + "▌")
 
                 if result.get("done"):
+                    if result.get("full_response") is not None:
+                        full_response = result["full_response"]
                     sources = result.get("sources")
                     break
 
             # Final render without cursor
             response_placeholder.markdown(full_response)
 
-            # Display sources if available
             if sources:
-                display_sources(sources)
+                display_sources(sources, show_diagnostics=show_diagnostics)
 
         except Exception as e:
             logger.error("Error processing query: %s", e, exc_info=True)
@@ -274,7 +230,7 @@ def _handle_user_input(
             )
             response_placeholder.markdown(full_response)
 
-    # Add assistant response to history
+    history.add_message("user", user_input)
     history.add_message("assistant", full_response, sources=sources)
 
 

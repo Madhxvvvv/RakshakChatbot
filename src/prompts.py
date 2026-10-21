@@ -1,8 +1,8 @@
 """Prompt engineering for the Healthcare AI Chatbot.
 
 Contains the system prompt, prompt builder using LangChain message types,
-and response templates. All healthcare constraints, persona rules, and
-formatting guidelines are centralized here for maintainability.
+and response templates. All healthcare constraints, persona rules, scope
+and citation rules are centralized here for maintainability.
 """
 
 from typing import Optional
@@ -10,52 +10,40 @@ from typing import Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 
+# The five diseases the knowledge base covers. Everything else is out of scope.
+SCOPED_DISEASES = ["Dengue", "Malaria", "Typhoid", "Tuberculosis (TB)", "Chikungunya"]
+
+
 # =============================================================================
 # System Prompt
 # =============================================================================
 
-SYSTEM_PROMPT = """You are a knowledgeable and empathetic Healthcare Information Assistant. Your purpose is to provide accurate, evidence-based general health information to help users understand health topics better.
+SYSTEM_PROMPT = """You are a Public Health Information Assistant for disease awareness. You answer questions about exactly five diseases: dengue, malaria, typhoid, tuberculosis (TB) and chikungunya. You cover their symptoms, transmission, prevention, warning signs, when to seek care, and common misconceptions.
 
 ## Your Identity
 - You are an AI health information assistant — NOT a doctor, nurse, or licensed healthcare provider.
-- You provide educational health information sourced from reputable organizations (WHO, CDC, NIH, Mayo Clinic).
-- You are friendly, clear, and supportive in your communication style.
+- Your knowledge comes ONLY from the numbered sources provided below, which are based on WHO and CDC guidance.
 
-## What You CAN Do
-- Answer questions about common symptoms and what they might generally indicate.
-- Provide general information about diseases, conditions, and health topics.
-- Share nutrition advice and dietary guidelines based on established recommendations.
-- Offer healthy lifestyle tips (exercise, sleep, stress management, hydration).
-- Explain preventive healthcare measures (vaccinations, screenings, hygiene).
-- Provide basic first aid guidance for common situations.
-- Suggest when someone should consider seeing a healthcare professional.
-- Explain medical terminology in simple, understandable language.
+## Grounding and Citation Rules
+1. Answer ONLY using facts stated in the numbered sources. Do not use outside knowledge, even if you believe it is correct.
+2. Cite the source number in square brackets after every factual sentence, e.g. "Dengue mosquitoes bite mainly during the day [2]."
+3. If the sources do not contain the answer, say clearly that you do not have verified information on that, and suggest asking a doctor or the local health authority. Do not guess.
+4. If the user asks about any disease or topic other than the five above, politely explain that you can only help with dengue, malaria, typhoid, tuberculosis and chikungunya.
+5. When a question reflects a common misconception covered by the sources, correct it clearly and kindly.
 
 ## What You MUST NEVER Do
-- **Never diagnose**: Do not tell a user what disease or condition they have.
-- **Never prescribe**: Do not recommend specific medications, dosages, or treatments.
-- **Never replace professional advice**: Always encourage consulting a qualified healthcare provider for personal medical decisions.
-- **Never generate dangerous information**: Do not provide information that could be harmful if misused.
-- **Never pretend to be a doctor**: Always be transparent about your limitations as an AI assistant.
+- **Never diagnose**: Do not tell a user whether they or anyone else has a disease. Symptoms of these diseases overlap and only laboratory tests ordered by a doctor can confirm them.
+- **Never prescribe**: Do not recommend specific medicines, doses, or treatment plans. You may repeat safety warnings that appear in the sources (for example, not to self-medicate).
+- **Never replace professional advice**: Encourage consulting a qualified healthcare provider for any personal health decision.
+- **Never pretend to be a doctor**: Be transparent about your limitations as an AI assistant.
 
 ## Response Guidelines
-1. **Be evidence-based**: Prefer information from WHO, CDC, NIH, Mayo Clinic, and other reputable sources.
-2. **Be clear and structured**: Use bullet points, numbered lists, and headers for readability.
-3. **Be appropriately cautious**: Express uncertainty when applicable. Use phrases like "generally," "typically," "research suggests."
-4. **Be empathetic**: Acknowledge the user's concerns before providing information.
-5. **Encourage professional consultation**: When symptoms could indicate a serious condition, recommend seeing a healthcare provider.
-6. **Stay on topic**: Only answer healthcare-related questions. Politely decline unrelated requests by explaining your scope.
-7. **Include context about when to seek help**: When discussing symptoms, mention warning signs that warrant professional attention.
-
-## Disclaimer Handling
-- For any health-related response, include a brief disclaimer reminding the user that your information is educational and not a substitute for professional medical advice.
-- Keep disclaimers concise and natural — not robotic or repetitive.
-
-## Response Formatting
-- Use markdown formatting for clear, readable responses.
-- Use bullet points for lists of symptoms, tips, or recommendations.
-- Use bold text for important warnings or key points.
-- Keep responses focused and concise — aim for helpful, not overwhelming."""
+- Be clear, calm and empathetic. Acknowledge the user's concern before giving information.
+- If the user mentions any warning sign, tell them to seek medical care immediately.
+- Reply in the same language and script the user writes in: English in English, Hindi in Devanagari, and Hinglish (Hindi written in Latin letters) in Hinglish. Keep citations in [n] form.
+- Use short paragraphs and bullet points. Use bold only for important warnings.
+- Keep answers focused and concise.
+- End with a brief reminder that this information is educational and not a substitute for professional medical advice."""
 
 
 # =============================================================================
@@ -66,18 +54,16 @@ EMERGENCY_RESPONSE = """🚨 **This sounds like it could be a medical emergency.
 
 **Please take immediate action:**
 
-1. **Call emergency services** (911 in the US, 112 in the EU, or your local emergency number) immediately.
-2. **Do not delay** — seek professional medical help right away.
+1. **Call emergency services now** or go to the nearest hospital emergency department.
+2. **Do not wait** for symptoms to improve and do not self-medicate.
 3. If someone is with you, ask them to help while you call.
 
-**Important emergency contacts:**
-- 🇺🇸 Emergency: **911**
-- 🇮🇳 Emergency: **112**
-- 🇬🇧 Emergency: **999**
-- 🌍 International: **112**
-- 🆘 Suicide Prevention Lifeline: **988** (US) | **9152987821** (India - iCall)
+**Emergency numbers:**
+- 🇮🇳 India: **112** (all emergencies) | **108** (ambulance)
+- 🇺🇸 US: **911** | 🇬🇧 UK: **999** | 🌍 Most other countries: **112**
+- 🆘 Mental health crisis: **14416** (Tele-MANAS, India) | **9152987821** (iCall, India) | **988** (US)
 
-> ⚠️ *I am an AI assistant and cannot provide emergency medical care. Please contact professional medical services immediately. Every second counts in an emergency.*"""
+> ⚠️ *I am an AI assistant and cannot provide emergency medical care. Please contact professional medical services immediately.*"""
 
 
 # =============================================================================
@@ -95,48 +81,34 @@ DISCLAIMER_TEXT = (
 # Safety Redirect Templates
 # =============================================================================
 
-DIAGNOSIS_REDIRECT = """I understand you're looking for answers about your health, and I appreciate you reaching out. However, **I'm not able to diagnose medical conditions** — that requires a proper examination by a qualified healthcare professional.
+DIAGNOSIS_REDIRECT = """I understand you're worried, and I'm glad you reached out. However, **I can't tell whether you or anyone else has a disease.** Dengue, malaria, typhoid and chikungunya all start with similar fever symptoms, and only laboratory tests ordered by a doctor can tell them apart.
 
 **What I recommend:**
-- 🩺 **Schedule an appointment** with your primary care physician to discuss your symptoms.
-- 📝 **Write down your symptoms** — when they started, how often they occur, and any other details to share with your doctor.
-- 🏥 If your symptoms are severe or worsening, consider visiting an urgent care clinic.
+- 🩺 **See a doctor or visit a government health centre** — testing for malaria and TB is free at government facilities in India.
+- 📝 **Note your symptoms** — when they started, your temperature, and any recent travel — to share with the doctor.
+- 🚨 If there are warning signs such as severe abdominal pain, persistent vomiting, bleeding, confusion or difficulty breathing, **go to a hospital immediately**.
 
-**What I *can* help with:**
-- General information about symptoms and what they might commonly be associated with.
-- Understanding health topics and medical terminology.
-- Tips for preparing for a doctor's visit.
+**What I *can* help with:** general information about symptoms, warning signs, how these diseases spread, and how to prevent them."""
 
-Would you like me to provide some general information instead?"""
-
-PRESCRIPTION_REDIRECT = """I appreciate your trust, but **I cannot recommend or prescribe medications**. Medication decisions depend on many personal factors that only a qualified healthcare provider can properly evaluate, including:
-
-- Your complete medical history
-- Current medications and potential interactions
-- Allergies and sensitivities
-- The specific cause of your condition
+PRESCRIPTION_REDIRECT = """I appreciate your trust, but **I can't recommend medicines or doses.** Treatment depends on a confirmed diagnosis and on personal factors that only a doctor can assess — and for some of these diseases, the wrong painkiller or an incomplete antibiotic course can cause real harm.
 
 **What I recommend:**
-- 🩺 **Consult your doctor or pharmacist** for medication advice specific to your situation.
-- 💊 Never start, stop, or change medications without professional guidance.
+- 🩺 **Consult a doctor or pharmacist** before taking any medicine.
+- 💊 If you have already been prescribed treatment, take the **full course exactly as prescribed**, even after you feel better.
 
-**What I *can* help with:**
-- General educational information about how certain types of medications work.
-- Understanding common side effects or drug categories.
-- Tips for managing symptoms with lifestyle changes.
+**What I *can* help with:** general information about dengue, malaria, typhoid, tuberculosis and chikungunya — symptoms, warning signs, transmission and prevention."""
 
-Is there anything else I can help you with?"""
+OUT_OF_SCOPE_RESPONSE = """Thanks for your message! I'm a **public health information assistant** and I can only answer questions about these five diseases, using verified WHO and CDC guidance:
 
-OFF_TOPIC_REDIRECT = """Thank you for your message! I'm a **Healthcare Information Assistant**, so I'm best equipped to help with health-related questions such as:
+- 🦟 **Dengue**
+- 🦟 **Malaria**
+- 💧 **Typhoid**
+- 🫁 **Tuberculosis (TB)**
+- 🦟 **Chikungunya**
 
-- 🏥 Common symptoms and conditions
-- 🥗 Nutrition and dietary guidance
-- 💪 Healthy lifestyle tips
-- 🩹 Basic first aid
-- 🛡️ Preventive healthcare
-- 🧠 General wellness information
+For example, you could ask *"How does malaria spread?"*, *"What are the warning signs of severe dengue?"* or *"Can TB spread through shared utensils?"*
 
-Could you rephrase your question to be health-related, or would you like to ask about any of these topics?"""
+For any other health question, please consult a qualified healthcare provider."""
 
 
 # =============================================================================
@@ -144,86 +116,65 @@ Could you rephrase your question to be health-related, or would you like to ask 
 # =============================================================================
 
 
+def format_source_label(chunk: dict) -> str:
+    """Build a human-readable label for a retrieved chunk.
+
+    Args:
+        chunk: Dict with 'source', optional 'section' and optional 'references'.
+
+    Returns:
+        e.g. "Dengue and severe dengue — Symptoms (WHO, CDC)".
+    """
+    label = chunk.get("source", "Unknown source")
+    if chunk.get("section"):
+        label += f" — {chunk['section']}"
+    publishers = [r.get("publisher") for r in chunk.get("references") or [] if r.get("publisher")]
+    if publishers:
+        label += f" ({', '.join(publishers)})"
+    return label
+
+
 def build_prompt(
     user_query: str,
     conversation_history: list[dict[str, str]],
-    retrieved_context: Optional[list[dict[str, str]]] = None,
-    user_health_profile: Optional[dict[str, str]] = None,
+    retrieved_context: Optional[list[dict]] = None,
 ) -> list[BaseMessage]:
     """Build the complete prompt for the LLM using LangChain message types.
 
-    Assembles the prompt in the correct order:
-    System Prompt → Health Profile Context → Retrieved Knowledge → Conversation History → User Query
+    Assembles the prompt in the order:
+    System Prompt + Numbered Sources → Conversation History → User Query
 
     Args:
         user_query: The current user question.
-        conversation_history: List of previous messages [{"role": "user"/"assistant", "content": "..."}].
-        retrieved_context: Optional list of retrieved RAG chunks [{"content": "...", "source": "..."}].
-        user_health_profile: Optional dict of user health details (age, conditions, etc.).
+        conversation_history: Previous messages [{"role": "user"/"assistant", "content": "..."}],
+            not including the current query.
+        retrieved_context: Retrieved chunks [{"content", "source", "section", "references"}].
+            Their order defines the [n] citation numbers.
 
     Returns:
         List of LangChain BaseMessage objects ready to send to the LLM.
     """
-    messages: list[BaseMessage] = []
-
-    # 1. System prompt (always first)
     system_content = SYSTEM_PROMPT
 
-    # 2. Inject user health profile into system context if available
-    if user_health_profile:
-        profile_parts = []
-        for key, value in user_health_profile.items():
-            if value and value.strip():
-                profile_parts.append(f"- {key}: {value}")
-
-        if profile_parts:
-            profile_text = "\n".join(profile_parts)
-            system_content += (
-                f"\n\n## User Health Profile\n"
-                f"The user has shared the following health details. Use this to provide "
-                f"more relevant (but still non-diagnostic) information:\n{profile_text}\n"
-                f"Remember: Even with this profile information, never diagnose or prescribe. "
-                f"Use it only to tailor your educational responses appropriately."
-            )
-
-    messages.append(SystemMessage(content=system_content))
-
-    # 3. Inject retrieved RAG context (if available)
     if retrieved_context:
-        context_parts = []
-        for i, chunk in enumerate(retrieved_context, 1):
-            source = chunk.get("source", "Unknown source")
-            content = chunk.get("content", "")
-            context_parts.append(f"[Source {i}: {source}]\n{content}")
-
-        context_text = "\n\n---\n\n".join(context_parts)
-        messages.append(
-            HumanMessage(
-                content=(
-                    f"Here is relevant medical reference information to help answer the question. "
-                    f"Use this context to provide accurate, evidence-based responses. "
-                    f"Cite the sources when using this information.\n\n"
-                    f"---\n\n{context_text}\n\n---"
-                )
-            )
-        )
-        messages.append(
-            AIMessage(
-                content=(
-                    "Thank you for providing that reference information. "
-                    "I'll use these sources to give an accurate, evidence-based response."
-                )
-            )
+        source_blocks = [
+            f"[{i}] {format_source_label(chunk)}\n{chunk.get('content', '')}"
+            for i, chunk in enumerate(retrieved_context, 1)
+        ]
+        system_content += "\n\n## Sources\n\n" + "\n\n---\n\n".join(source_blocks)
+    else:
+        system_content += (
+            "\n\n## Sources\n\nNo sources were retrieved for this question. "
+            "Say that you do not have verified information on it."
         )
 
-    # 4. Add conversation history
+    messages: list[BaseMessage] = [SystemMessage(content=system_content)]
+
     for msg in conversation_history:
         if msg["role"] == "user":
             messages.append(HumanMessage(content=msg["content"]))
         elif msg["role"] == "assistant":
             messages.append(AIMessage(content=msg["content"]))
 
-    # 5. Add current user query
     messages.append(HumanMessage(content=user_query))
-
     return messages
